@@ -41,8 +41,11 @@ def news_score(base, events, min_importance, now=None, playbook=None):
     return max(-1.0, min(1.0, total)), reasons, used
 
 
-def positioning_score(ticker, oi_hist, ta):
+def positioning_score(ticker, oi_hist, ta, whale_net=0.0):
     score, reasons = 0.0, []
+    if abs(whale_net) >= 0.1:
+        score += 0.5 * whale_net
+        reasons.append(f"потоки китов за 24ч: {'накопление' if whale_net > 0 else 'давление продаж'} ({whale_net:+.2f})")
     f = ticker["funding"]  # ставка за 8 часов, доля (0.0001 = 0.01%)
     if f >= 0.0005:
         score -= 0.6; reasons.append(f"фандинг {f*100:.3f}% — переполнены лонги")
@@ -62,11 +65,11 @@ def positioning_score(ticker, oi_hist, ta):
     return max(-1.0, min(1.0, score)), reasons
 
 
-def build_signal(symbol, base, ta, ticker, oi_hist, events, params, now=None, playbook=None):
+def build_signal(symbol, base, ta, ticker, oi_hist, events, params, now=None, playbook=None, whale_net=0.0):
     p = params
     ns, nreasons, used = news_score(base, events, p["min_news_importance"], now,
                                     playbook if p.get("use_playbook", True) else None)
-    ps, preasons = positioning_score(ticker, oi_hist, ta)
+    ps, preasons = positioning_score(ticker, oi_hist, ta, whale_net)
     ts = ta["score"]
     nw, tw, pw = p["news_weight"], p["ta_weight"], p["positioning_weight"]
     # Аддитивное сведение: сильная новость сама по себе даёт вход, ТА и позиционирование усиливают или гасят её.

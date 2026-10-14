@@ -13,7 +13,11 @@ sources:
   # MuskTweets = зеркало твитов Маска, realdonaldtrump_truth и TrumpTruthPosts = зеркала Truth Social, whitehouse = Белый дом
   telegram_channels: [WatcherGuru, crypto_headlines, cointelegraph, CoinDeskGlobal, wublockchainenglish, BWEnews,
                       unfolded, binance_announcements, Bybit_Announcements,
-                      MuskTweets, realdonaldtrump_truth, TrumpTruthPosts, whitehouse]
+                      MuskTweets, realdonaldtrump_truth, TrumpTruthPosts, whitehouse,
+                      whale_alert_io, whalebotalerts]
+  # Каналы, чьи сообщения о крупных переводах разбираются без модели (bot/whales.py)
+  whale_channels: [whale_alert_io]
+  whale_min_usd: 50000000
   # Truth Social напрямую (открытый API, без ключей): имя -> id аккаунта
   truthsocial_accounts: {realDonaldTrump: "107780257626128497"}
   # X (Twitter) через официальный API. Оплата по факту: ~0.005$ за пост. Нужен TWITTER_BEARER_TOKEN.

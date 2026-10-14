@@ -23,6 +23,7 @@ from .review import Reviewer
 from .risk import RiskManager
 from .signals import build_signal
 from .ta import snapshot
+from .whales import WhaleFlows, parse as parse_whale
 from .xstream import XActivityStream
 
 
@@ -54,7 +55,8 @@ class Bot:
         self.playbook = Playbook()
         self.risk = RiskManager(self.s, self.ex, self.j, self.cal)
         self.exe = Executor(self.s, self.ex, self.risk, self.j, self.tg)
-        self.analyst = Analyst(self.s, self.j, self.playbook, self.cal) if self.s.has_anthropic else None
+        self.whales = WhaleFlows(self.j)
+        self.analyst = Analyst(self.s, self.j, self.playbook, self.cal, self.whales) if self.s.has_anthropic else None
         self.reviewer = Reviewer(self.s, self.j, self.tg) if self.s.has_anthropic else None
         self.news = NewsCollector(self.ex, self.j, self.s)
         self.events_q = queue.Queue()
@@ -100,16 +102,25 @@ class Bot:
 
     def process_news(self, fresh):
         log.info("Новых новостей: %d", len(fresh))
-        if not self.analyst:
-            for it in fresh:
-                self.j.mark_analyzed(it["id"])
-            return
+        whale_srcs = {f"tg:{c}" for c in (self.s.get("sources.whale_channels") or [])}
         lessons = self.reviewer.lessons_text() if self.reviewer else ""
         for it in fresh:
             self.j.mark_analyzed(it["id"])
-            if not self.analyst.prefilter(it["title"], it["summary"]):
-                continue
-            ev = self.analyst.classify(it["title"], it["summary"], it["source"], lessons)
+            ev = None
+            if it["source"] in whale_srcs:
+                ev = parse_whale(it["summary"])
+                if ev:
+                    if ev["usd"] < self.s.get("sources.whale_min_usd", 50_000_000):
+                        continue
+                    self.whales.add(ev)
+                elif not self.analyst:
+                    continue
+            if ev is None:
+                if not self.analyst:
+                    continue
+                if not self.analyst.prefilter(it["title"], it["summary"]):
+                    continue
+                ev = self.analyst.classify(it["title"], it["summary"], it["source"], lessons)
             if not ev or not ev["relevant"] or ev["already_priced"]:
                 continue
             self.j.add_event(it["id"], it["published_ts"], ev, it["title"])
@@ -134,7 +145,8 @@ class Bot:
         df1h = self.ex.klines(symbol, "60", 300)
         df4h = self.ex.klines(symbol, "240", 120)
         df15 = self.ex.klines(symbol, "15", 100)
-        ta = snapshot(df1h, df4h, df15)
+        dfd = self.ex.klines(symbol, "D", 250)
+        ta = snapshot(df1h, df4h, df15, dfd)
         tk = self.ex.ticker(symbol)
         oi = self.ex.open_interest(symbol, 24)
         self.cache[symbol] = (time.time(), ta, tk, oi)
@@ -162,7 +174,8 @@ class Bot:
                 continue
             if not ta:
                 continue
-            sig = build_signal(sym, inst[sym]["base"], ta, tk, oi, events, params, playbook=self.playbook)
+            sig = build_signal(sym, inst[sym]["base"], ta, tk, oi, events, params, playbook=self.playbook,
+                               whale_net=self.whales.net_score(inst[sym]["base"]))
             if sig:
                 candidates.append((sig, ta, tk))
         candidates.sort(key=lambda x: x[0].strength, reverse=True)

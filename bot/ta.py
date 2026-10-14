@@ -72,10 +72,23 @@ def _trend(close, fast, slow):
     return 0
 
 
-def snapshot(df1h: pd.DataFrame, df4h: pd.DataFrame | None = None, df15: pd.DataFrame | None = None) -> dict | None:
-    """Сводка по инструменту. Нужно минимум 120 часовых свечей."""
+def snapshot(df1h: pd.DataFrame, df4h: pd.DataFrame | None = None, df15: pd.DataFrame | None = None,
+             dfd: pd.DataFrame | None = None) -> dict | None:
+    """Сводка по инструменту. Нужно минимум 120 часовых свечей. dfd = дневные свечи (режим старшего таймфрейма)."""
     if df1h is None or len(df1h) < 120:
         return None
+    # Дневной режим: по 15 годам BTC импульс на дневках (цена выше SMA200, RSI>70, пробой максимума) даёт
+    # +9..+15% преимущества за 20 дней, а покупка просадок преимущества не даёт (research/ta_rules_50y.py)
+    trend_d, rsi_d, breakout_d = 0, 50.0, 0
+    if dfd is not None and len(dfd) >= 60:
+        cd = dfd["close"]
+        n200 = 200 if len(cd) >= 200 else len(cd) - 1
+        sma50, sma200 = float(cd.rolling(min(50, len(cd) - 1)).mean().iloc[-1]), float(cd.rolling(n200).mean().iloc[-1])
+        cl = float(cd.iloc[-1])
+        trend_d = 1 if (cl > sma200 and sma50 > sma200) else (-1 if (cl < sma200 and sma50 < sma200) else 0)
+        rsi_d = float(rsi(cd, 14).iloc[-1])
+        hi20d, lo20d = float(dfd["high"].iloc[-21:-1].max()), float(dfd["low"].iloc[-21:-1].min())
+        breakout_d = 1 if cl > hi20d else (-1 if cl < lo20d else 0)
     c = df1h["close"]
     e20, e50 = ema(c, 20), ema(c, 50)
     e200 = ema(c, 200 if len(c) >= 200 else len(c) - 1)
@@ -152,6 +165,13 @@ def snapshot(df1h: pd.DataFrame, df4h: pd.DataFrame | None = None, df15: pd.Data
         score += 0.1 * breakout
     if squeeze_release and breakout != 0:
         score += 0.1 * breakout
+    # Дневной импульс: за тренд на дневках +0.15, импульсный режим (RSI_d>70 в тренде или пробой дневного максимума) +0.1;
+    # лонг против дневного нисходящего тренда и шорт против дневного восходящего ослабляются
+    score += 0.15 * trend_d
+    if trend_d > 0 and (rsi_d > 70 or breakout_d > 0):
+        score += 0.1
+    if trend_d < 0 and breakout_d < 0:
+        score -= 0.1
     if (rsi_v > 75 and score > 0) or (rsi_v < 25 and score < 0):
         score *= 0.5
     if div != 0 and (div > 0) != (score > 0):
@@ -161,6 +181,8 @@ def snapshot(df1h: pd.DataFrame, df4h: pd.DataFrame | None = None, df15: pd.Data
         score *= 0.7
     if score < 0 and sup_dist < 1.0:
         score *= 0.7
+    if (trend_d < 0 and score > 0) or (trend_d > 0 and score < 0):
+        score *= 0.75
     score = max(-1.0, min(1.0, score))
 
     return {
@@ -170,6 +192,7 @@ def snapshot(df1h: pd.DataFrame, df4h: pd.DataFrame | None = None, df15: pd.Data
         "ret_24h": round(ret_24h, 2), "ret_4h": round(ret_4h, 2), "macd_hist": round(mh, 6),
         "macd_sign": macd_sign, "bb_pct_b": round(pb, 2), "bb_squeeze": bool(squeeze),
         "bb_release": bool(squeeze_release), "rsi_divergence": div, "res_dist_atr": round(res_dist, 2),
-        "sup_dist_atr": round(sup_dist, 2), "ema20": float(e20.iloc[-1]), "ema50": float(e50.iloc[-1]),
+        "sup_dist_atr": round(sup_dist, 2), "trend_d": trend_d, "rsi_d": round(rsi_d, 1), "breakout_d": breakout_d,
+        "ema20": float(e20.iloc[-1]), "ema50": float(e50.iloc[-1]),
         "ema200": float(e200.iloc[-1]), "regime": regime, "score": round(score, 3),
     }

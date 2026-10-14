@@ -97,9 +97,9 @@ class CostTracker:
 
 
 class Analyst:
-    def __init__(self, settings, journal, playbook=None, calendar=None):
+    def __init__(self, settings, journal, playbook=None, calendar=None, whales=None):
         self.s, self.j = settings, journal
-        self.playbook, self.calendar = playbook, calendar
+        self.playbook, self.calendar, self.whales = playbook, calendar, whales
         self.client = anthropic.Anthropic(max_retries=3, timeout=90.0)
         self.model = settings.get("llm.model")
         self.cheap = settings.get("llm.cheap_model")
@@ -140,6 +140,10 @@ class Analyst:
                 parts.append(pb)
         if self.calendar:
             parts.append(self.calendar.context_text(96))
+        if self.whales:
+            w = self.whales.text(24)
+            if w:
+                parts.append(w)
         return "\n\n".join(parts)
 
     def prefilter(self, title, summary):
@@ -190,7 +194,7 @@ class Analyst:
     def judge_setup(self, symbol, direction, ta, ticker, events, lessons_text=""):
         if self.over_budget():
             return None
-        keys = ("close", "regime", "trend_1h", "trend_4h", "timing_15m", "breakout", "rsi", "adx", "atr_pct",
+        keys = ("close", "regime", "trend_d", "rsi_d", "breakout_d", "trend_1h", "trend_4h", "timing_15m", "breakout", "rsi", "adx", "atr_pct",
                 "vol_ratio", "ret_24h", "ret_4h", "macd_sign", "bb_pct_b", "bb_squeeze", "rsi_divergence",
                 "res_dist_atr", "sup_dist_atr")
         payload = {
