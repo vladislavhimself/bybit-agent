@@ -19,9 +19,17 @@ sources:
   # X (Twitter) через официальный API. Оплата по факту: ~0.005$ за пост. Нужен TWITTER_BEARER_TOKEN.
   # twitter_mode: stream = X Activity API (поток событий в реальном времени, лучший вариант),
   #               poll   = опрос search/recent раз в twitter_poll_sec (дороже и медленнее), off = выключено
-  twitter_mode: stream
-  twitter_accounts: [elonmusk, realDonaldTrump, WhiteHouse, federalreserve, SECGov, cz_binance, saylor,
-                     DeItaone, FirstSquawk, unusual_whales, WatcherGuru, Cointelegraph]
+  twitter_mode: off              # платно, пока выключено; stream = X Activity API, poll = опрос search/recent
+  # Аккаунты по силе влияния на крипторынок (для режимов stream/poll):
+  # политика и макро: elonmusk, realDonaldTrump, WhiteHouse, federalreserve, USTreasury, SecScottBessent, NickTimiraos
+  # регуляторы: SECGov, CFTC
+  # новостные ленты (самые быстрые): DeItaone, FirstSquawk, unusual_whales, WatcherGuru, tier10k, KobeissiLetter
+  # крипто-лидеры: cz_binance, saylor, VitalikButerin, brian_armstrong, paoloardoino, justinsuntron
+  # ончейн и взломы: lookonchain, whale_alert, PeckShieldAlert, zachxbt, ArkhamIntel
+  twitter_accounts: [elonmusk, realDonaldTrump, WhiteHouse, federalreserve, USTreasury, SecScottBessent, NickTimiraos,
+                     SECGov, CFTC, DeItaone, FirstSquawk, unusual_whales, WatcherGuru, tier10k, KobeissiLetter,
+                     cz_binance, saylor, VitalikButerin, brian_armstrong, paoloardoino, justinsuntron,
+                     lookonchain, whale_alert, PeckShieldAlert, zachxbt, ArkhamIntel]
   twitter_poll_sec: 120
 
 intervals:
