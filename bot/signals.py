@@ -1,4 +1,5 @@
 """Сведение сигналов: новости + теханализ + позиционирование толпы -> оценка и уровень уверенности."""
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -48,7 +49,13 @@ def news_score(base, events, min_importance, now=None, playbook=None, df1h=None,
         total += contrib
         e = dict(e, age_h=round(age_h, 1))
         used.append(e)
-        reasons.append(f"новость[{e['event_type']}, imp {e['importance']}, {e['direction']}, {age_h:.1f}ч]: {e['title'][:70]}")
+        label = {"listing": "листинг", "delisting": "делистинг", "hack": "взлом", "collapse": "крах",
+                 "regulation": "регулятор", "macro": "макро", "etf": "ETF", "partnership": "партнёрство",
+                 "whale": "киты", "upgrade": "обновление", "outage": "сбой", "legal": "суд",
+                 "token_unlock": "разблокировка", "earnings": "отчёт"}.get(e["event_type"], "событие")
+        text = e.get("reasoning") if e["event_type"] == "whale" else e.get("title", "")
+        text = " ".join(re.sub(r"[^\w\s$#%().,:;!?'\"/+\-]", "", text or "").split())[:90]
+        reasons.append(f"новость ({label}, важность {e['importance']}, {age_h:.1f}ч назад): {text}")
     return max(-1.0, min(1.0, total)), reasons, used
 
 

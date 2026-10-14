@@ -4,6 +4,8 @@ import logging
 import time
 from decimal import Decimal
 
+from . import fmt
+
 log = logging.getLogger("executor")
 
 
@@ -72,14 +74,10 @@ class Executor:
             "reasons": sig.reasons, "regime": sig.regime, "atr": ta["atr"], "leverage": lev,
             "order_id": order_id, "news_driven": sig.news_driven, "tp_plan": plan,
         })
-        tps = ", ".join(f"{l['r']}R@{l['price']:g} ({l['qty']:g})" for l in plan) or "только трейлинг"
-        self.tg.send(
-            f"🟢 Открыл {sig.symbol} {sig.direction.upper()} [{sig.tier}]\n"
-            f"вход {entry:g}, стоп {stop:g}, объём {qty:g} (~{qty * entry:.0f} USDT, плечо {lev}x)\n"
-            f"тейки: {tps}, остаток трейлингом\n"
-            f"риск {r['risk_per_trade_pct'][sig.tier]}% капитала | сила {sig.strength}\n"
-            + "\n".join("• " + x for x in sig.reasons[:5])
-        )
+        risk_pct = r["risk_per_trade_pct"][sig.tier]
+        tradable = self.risk.tradable(equity)
+        self.tg.send(fmt.entry_message(sig, entry, qty, lev, stop, plan, risk_pct, abs(entry - stop) * qty,
+                                       tradable, equity, ta))
         return tid
 
     # ---------- сопровождение ----------
@@ -115,7 +113,8 @@ class Executor:
                 new_hits = max(new_hits, hits)
                 self.j.update_partial(t["id"], pos["qty"], new_hits)
                 if new_hits > hits:
-                    self.tg.send(f"💰 {sym}: тейк {new_hits} исполнен, остаток {pos['qty']:g}")
+                    self.tg.send(f"💰 ЧАСТИЧНЫЙ ТЕЙК: {fmt.base_of(sym)}, тейк {new_hits} исполнен по {mark:g}, "
+                                 f"остаток {pos['qty']:g} {fmt.base_of(sym)}, стоп переносится в безубыток")
                     if hits == 0 and r.get("breakeven_after_tp1"):
                         be = t["entry"] * (1 + 0.0015 * (1 if long else -1))
                         self._move_stop(t, be, "безубыток после первого тейка")
@@ -196,8 +195,11 @@ class Executor:
         self.j.close_trade(t["id"], exit_price, pnl, reason)
         risk = abs(t["entry"] - t["stop_init"]) * (t.get("qty_init") or t["qty"])
         pnl_r = pnl / risk if risk > 0 else 0
-        emoji = "✅" if pnl > 0 else "❌"
-        self.tg.send(f"{emoji} Закрыл {t['symbol']} {t['side']} [{t['tier']}]: {pnl:+.2f} USDT ({pnl_r:+.2f}R) — {reason}")
+        try:
+            tradable = self.risk.tradable(self.ex.equity()[0])
+        except Exception:  # noqa: BLE001
+            tradable = None
+        self.tg.send(fmt.close_message(t, pnl, pnl_r, reason, tradable))
 
     def close_all(self, reason):
         n = 0

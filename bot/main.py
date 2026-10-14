@@ -14,6 +14,7 @@ from .analyst import Analyst
 from .calendar import Calendar
 from .config import LOGS, Settings
 from .exchange import Exchange
+from . import fmt
 from .executor import Executor
 from .journal import Journal
 from .macro import MarketMood
@@ -136,9 +137,10 @@ class Bot:
                    "horizon_hours": ev["horizon_hours"], "reasoning": ev["reasoning"], "title": it["title"]}
             self.events_q.put(rec)
             if ev["importance"] >= 8:
-                self.tg.send(f"📰 Важная новость (imp {ev['importance']}, {ev['direction']}, "
-                             f"{', '.join(ev['affected_symbols']) or 'весь рынок'}, задержка {lag:.0f}с):\n"
-                             f"{it['title']}\n{ev['reasoning']}")
+                d = {"bullish": "позитив", "bearish": "негатив", "neutral": "нейтрально"}[ev["direction"]]
+                self.tg.send(f"📰 ВАЖНАЯ НОВОСТЬ ({fmt.RU_TYPE.get(ev['event_type'], 'событие')}, важность "
+                             f"{ev['importance']}/10, {d} для {', '.join(ev['affected_symbols']) or 'всего рынка'})\n"
+                             f"{fmt.clean(it['title'], 160)}\n{ev['reasoning']}")
 
     # ---------- данные ----------
     def market_data(self, symbol, max_age=240):
@@ -208,8 +210,16 @@ class Bot:
             log.info("СИГНАЛ %s %s [%s] сила %.2f: %s", sig.symbol, sig.direction, sig.tier, sig.strength,
                      sig.components)
             if self.dry:
-                self.tg.send(f"[dry-run] сигнал {sig.symbol} {sig.direction} [{sig.tier}] сила {sig.strength}\n"
-                             + "\n".join("• " + r for r in sig.reasons[:4]))
+                r = self.s.get("risk")
+                dist = ta["atr"] * r["stop_atr_mult"]
+                stop = ta["close"] - dist if sig.direction == "long" else ta["close"] + dist
+                qty, lev = self.risk.size(sig.symbol, equity, ta["close"], stop, sig.tier, positions)
+                if qty is None:
+                    log.info("%s: dry-run, размер не рассчитан: %s", sig.symbol, lev)
+                    continue
+                plan = self.exe._tp_plan(sig.symbol, qty, ta["close"], dist, sig.direction == "long")
+                self.tg.send(fmt.entry_message(sig, ta["close"], qty, lev, stop, plan, r["risk_per_trade_pct"][sig.tier],
+                                               dist * qty, self.risk.tradable(equity), equity, ta, dry=True))
                 continue
             tid = self.exe.open(sig, ta, equity, positions)
             if tid:
@@ -264,31 +274,12 @@ class Bot:
     # ---------- отчёты и команды ----------
     def step_report(self, equity, positions):
         m = self.risk.metrics(equity)
-        st = self.j.stats()
-        lines = [f"💼 Баланс {equity:.2f} USDT = торговый {m['tradable']:.2f} + резерв {m['reserve']:.2f}\n"
-                 f"день {m['day_pct']:+.2f}% | неделя {m['week_pct']:+.2f}% | просадка {m['drawdown_pct']:.1f}% "
-                 f"(пик {m['peak']:.0f})"]
-        if m["halted"]:
-            lines.append(f"⛔ Остановлен: {m['halt_reason']} — /resume чтобы продолжить")
-        if positions:
-            lines.append("Позиции:")
-            for p in positions:
-                lines.append(f"• {p['symbol']} {p['side']} {p['qty']:g} @ {p['entry']:g} → {p['upnl']:+.2f} USDT "
-                             f"({p['leverage']:.0f}x, стоп {p['sl']:g})")
-        else:
-            lines.append("Позиций нет")
-        if st["n"]:
-            lines.append(f"Сделок {st['n']}: винрейт {st['win_rate']}%, средний R {st['avg_r']}, "
-                         f"PF {st['profit_factor']}, итог {st['pnl']:+.2f} USDT")
+        llm = None
         if self.analyst:
             c = self.analyst.cost.today()
-            lines.append(f"Модель сегодня: {c['calls']} вызовов, {c['usd']:.2f}$ из {self.analyst.budget:.0f}$")
-        nh = self.cal.next_high()
-        if nh:
-            lines.append(f"Ближайшее макро: {nh}")
-        if self.xstream:
-            lines.append(f"Поток X: {self.xstream.status()}")
-        self.tg.send("\n".join(lines))
+            llm = {"calls": c["calls"], "usd": c["usd"], "budget": self.analyst.budget}
+        self.tg.send(fmt.balance_message(equity, m, positions, self.j.stats(), float(self.s.get("risk.capital_cap_usd") or 0),
+                                         llm, self.cal.next_high(), self.xstream.status() if self.xstream else None))
 
     def handle_commands(self, equity, positions):
         for cmd in self.tg.pop_commands():
@@ -331,10 +322,11 @@ class Bot:
         threading.Thread(target=self.news_loop, daemon=True, name="news").start()
         x_on = self.xstream.start() if self.xstream else False
         m = self.risk.metrics(equity)
-        self.tg.send(f"🤖 Бот запущен [{self.s.mode}{' dry-run' if self.dry else ''}], баланс {equity:.2f} USDT "
-                     f"(резерв {m['reserve']:.2f}), аналитик {'вкл' if self.analyst else 'ВЫКЛ (нет ANTHROPIC_API_KEY)'}, "
-                     f"новости: {len(self.news.tg_channels)} TG-каналов + Truth Social + RSS + анонсы бирж"
-                     f"{' + поток X' if x_on else ''}")
+        mode = {"demo": "demo-счёт, виртуальные деньги", "testnet": "testnet", "live": "РЕАЛЬНЫЕ ДЕНЬГИ"}[self.s.mode]
+        self.tg.send(f"🤖 Бот запущен ({mode}{', dry-run: сделки не открываются, только сигналы' if self.dry else ''})\n"
+                     f"Торговый капитал {m['tradable']:.0f} USDT, резерв {m['reserve']:.0f}, весь счёт {equity:.0f} USDT\n"
+                     f"Аналитик {'включён' if self.analyst else 'ВЫКЛЮЧЕН (нет ANTHROPIC_API_KEY)'}; "
+                     f"новости: {len(self.news.tg_channels)} Telegram-каналов, RSS, анонсы бирж{', поток X' if x_on else ''}")
         while True:
             now = time.time()
             try:

@@ -63,6 +63,16 @@ class RiskManager:
         now = datetime.now(timezone.utc)
         dk, wk = now.strftime("%Y-%m-%d"), now.strftime("%G-W%V")
         r = self.s.get("risk")
+        cap = float(r.get("capital_cap_usd") or 0)
+        if self.j.kv_get("cap_used") != cap:
+            # лимит капитала изменился: старые точки отсчёта (пик, база, день, неделя) бессмысленны
+            self.j.kv_set("cap_used", cap)
+            if cap > 0:
+                self.j.kv_set("start_equity", equity)
+            t0 = self.tradable(equity)
+            self.base = self.peak = self.day_start = self.week_start = t0
+            self.halted, self.halt_reason = False, ""
+            log.info("Лимит капитала %s: точки отсчёта сброшены, торговый капитал %.2f", cap or "снят", t0)
         t = self.tradable(equity)
         if self.base <= 0:
             self.base = self.peak = self.day_start = self.week_start = t
@@ -96,7 +106,8 @@ class RiskManager:
         if self.halted:
             return False, self.halt_reason
         if dd >= r["kill_switch_drawdown_pct"]:
-            self.halt(f"просадка торгового капитала {dd:.1f}% >= {r['kill_switch_drawdown_pct']}% (kill-switch)")
+            self.halt(f"торговый капитал просел на {dd:.1f}% от пика {self.peak:.0f} USDT (порог "
+                      f"{r['kill_switch_drawdown_pct']}%), новые сделки остановлены")
             return False, self.halt_reason
         if day_loss >= r["daily_loss_limit_pct"]:
             return False, f"дневной лимит убытка: -{day_loss:.1f}%"
