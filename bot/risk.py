@@ -35,6 +35,15 @@ class RiskManager:
 
     # ---------- состояние ----------
     def tradable(self, equity):
+        """Торговый капитал = (лимит + изменение equity с момента старта, если лимит задан) − резерв прибыли."""
+        cap = float(self.s.get("risk.capital_cap_usd") or 0)
+        if cap > 0:
+            start = self.j.kv_get("start_equity")
+            if start is None:
+                start = equity
+                self.j.kv_set("start_equity", start)
+            virtual = cap + (equity - start)
+            return max(0.0, min(virtual, equity) - self.reserve)
         return max(0.0, equity - self.reserve)
 
     def halt(self, reason):

@@ -153,7 +153,7 @@ class Bot:
         tk = self.ex.ticker(symbol)
         tk["long_ratio"] = self.ex.long_short_ratio(symbol)
         oi = self.ex.open_interest(symbol, 24)
-        self.cache[symbol] = (time.time(), ta, tk, oi)
+        self.cache[symbol] = (time.time(), ta, tk, oi, df1h)
         return ta, tk, oi
 
     # ---------- оценка и входы ----------
@@ -178,8 +178,10 @@ class Bot:
                 continue
             if not ta:
                 continue
+            df1h = self.cache.get(sym, (0, None, None, None, None))[4]
             sig = build_signal(sym, inst[sym]["base"], ta, tk, oi, events, params, playbook=self.playbook,
-                               whale_net=self.whales.net_score(inst[sym]["base"]), mood=self.mood.score())
+                               whale_net=self.whales.net_score(inst[sym]["base"]), mood=self.mood.score(),
+                               df1h=df1h, psych_cfg=self.s.get("psychology") or {})
             if sig:
                 candidates.append((sig, ta, tk))
         candidates.sort(key=lambda x: x[0].strength, reverse=True)

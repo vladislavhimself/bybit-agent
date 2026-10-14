@@ -2,6 +2,8 @@
 import time
 from dataclasses import dataclass, field
 
+from . import psychology
+
 
 @dataclass
 class Signal:
@@ -16,7 +18,7 @@ class Signal:
     events: list = field(default_factory=list)
 
 
-def news_score(base, events, min_importance, now=None, playbook=None):
+def news_score(base, events, min_importance, now=None, playbook=None, df1h=None, psych_cfg=None):
     now = now or time.time()
     total, reasons, used = 0.0, [], []
     for e in events:
@@ -34,6 +36,15 @@ def news_score(base, events, min_importance, now=None, playbook=None):
         contrib = sign * e["importance"] / 10 * e["confidence"] * decay * w
         if playbook is not None:
             contrib *= playbook.adjust(e["event_type"], e["direction"])
+        if psych_cfg and df1h is not None and direct:
+            k1, r1 = psychology.priced_in(e, df1h, psych_cfg)
+            k2, r2 = psychology.reaction(e, df1h, psych_cfg, now)
+            contrib *= k1 * k2
+            reasons += [r for r in (r1, r2) if r]
+        cr = e.get("contrarian_risk") or 0.0
+        if cr >= 0.5:
+            contrib *= (1 - 0.5 * cr)
+            reasons.append(f"психология: модель видит риск обратной реакции {cr:.1f}")
         total += contrib
         e = dict(e, age_h=round(age_h, 1))
         used.append(e)
@@ -74,11 +85,14 @@ def positioning_score(ticker, oi_hist, ta, whale_net=0.0, mood=0.0):
     return max(-1.0, min(1.0, score)), reasons
 
 
-def build_signal(symbol, base, ta, ticker, oi_hist, events, params, now=None, playbook=None, whale_net=0.0, mood=0.0):
+def build_signal(symbol, base, ta, ticker, oi_hist, events, params, now=None, playbook=None, whale_net=0.0, mood=0.0,
+                 df1h=None, psych_cfg=None):
     p = params
     ns, nreasons, used = news_score(base, events, p["min_news_importance"], now,
-                                    playbook if p.get("use_playbook", True) else None)
+                                    playbook if p.get("use_playbook", True) else None, df1h, psych_cfg)
     ps, preasons = positioning_score(ticker, oi_hist, ta, whale_net, mood)
+    crowd_s, crowd_reasons = psychology.crowd(ticker, mood, psych_cfg or {})
+    preasons += crowd_reasons
     ts = ta["score"]
     nw, tw, pw = p["news_weight"], p["ta_weight"], p["positioning_weight"]
     # Аддитивное сведение: сильная новость сама по себе даёт вход, ТА и позиционирование усиливают или гасят её.
@@ -90,6 +104,7 @@ def build_signal(symbol, base, ta, ticker, oi_hist, events, params, now=None, pl
     sign = 1 if total > 0 else -1
     agreement = (sum(1 for v in nonzero if (v > 0) == (sign > 0)) / len(nonzero)) if nonzero else 0.0
     strength = abs(total) * (0.7 + 0.3 * agreement)
+    strength *= psychology.crowd_adjust(sign, crowd_s, psych_cfg or {})
     if ta.get("timing_15m", 0) != 0 and (ta["timing_15m"] > 0) != (sign > 0):
         strength *= 0.85  # 15-минутный импульс против нас: ждём лучшей точки
 

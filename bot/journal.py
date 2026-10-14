@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS news (
 );
 CREATE TABLE IF NOT EXISTS events (
     news_id TEXT PRIMARY KEY, ts INTEGER, event_type TEXT, importance INTEGER, direction TEXT,
-    confidence REAL, affected TEXT, market_wide INTEGER, horizon_hours INTEGER, reasoning TEXT, title TEXT
+    confidence REAL, affected TEXT, market_wide INTEGER, horizon_hours INTEGER, reasoning TEXT, title TEXT,
+    crowd_reaction TEXT, contrarian_risk REAL
 );
 CREATE TABLE IF NOT EXISTS trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, side TEXT, qty REAL, entry REAL, stop REAL, tp REAL,
@@ -40,6 +41,11 @@ class Journal:
             for col, typ in (("qty_init", "REAL"), ("tp_plan", "TEXT"), ("tp_hits", "INTEGER DEFAULT 0")):
                 try:
                     self.db.execute(f"ALTER TABLE trades ADD COLUMN {col} {typ}")
+                except sqlite3.OperationalError:
+                    pass
+            for col, typ in (("crowd_reaction", "TEXT"), ("contrarian_risk", "REAL")):
+                try:
+                    self.db.execute(f"ALTER TABLE events ADD COLUMN {col} {typ}")
                 except sqlite3.OperationalError:
                     pass
             self.db.commit()
@@ -72,10 +78,12 @@ class Journal:
         self._run("UPDATE news SET analyzed=1 WHERE id=?", (news_id,))
 
     def add_event(self, news_id, ts, ev: dict, title):
-        self._run("INSERT OR REPLACE INTO events VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        self._run("INSERT OR REPLACE INTO events(news_id,ts,event_type,importance,direction,confidence,affected,"
+                  "market_wide,horizon_hours,reasoning,title,crowd_reaction,contrarian_risk) "
+                  "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                   (news_id, ts, ev["event_type"], ev["importance"], ev["direction"], ev["confidence"],
                    json.dumps(ev["affected_symbols"]), int(ev["market_wide"]), ev["horizon_hours"],
-                   ev["reasoning"], title))
+                   ev["reasoning"], title, ev.get("crowd_reaction", "neutral"), float(ev.get("contrarian_risk") or 0)))
 
     def recent_events(self, hours=72):
         rows = self._run("SELECT * FROM events WHERE ts>=? ORDER BY ts DESC",
