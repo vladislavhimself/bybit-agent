@@ -23,6 +23,7 @@ from .review import Reviewer
 from .risk import RiskManager
 from .signals import build_signal
 from .ta import snapshot
+from .xstream import XActivityStream
 
 
 def setup_logging():
@@ -57,26 +58,47 @@ class Bot:
         self.reviewer = Reviewer(self.s, self.j, self.tg) if self.s.has_anthropic else None
         self.news = NewsCollector(self.ex, self.j, self.s)
         self.events_q = queue.Queue()
+        self.raw_q = queue.Queue()          # посты из потока X, минуя опрос
+        self.news_wake = threading.Event()
         self.stop_flag = threading.Event()
+        self.xstream = None
+        if self.s.get("sources.twitter_mode", "stream") == "stream":
+            self.xstream = XActivityStream(self.s, self.j, self._on_stream_items,
+                                           self.s.get("sources.twitter_accounts") or [])
         self.last = {"scan": 0, "manage": 0, "report": 0, "review": 0}
         self.closed_since_review = 0
         self.cache = {}   # symbol -> (ts, ta, ticker, oi)
 
     # ---------- поток новостей ----------
+    def _on_stream_items(self, items):
+        for it in items:
+            self.raw_q.put(it)
+        self.news_wake.set()
+
     def news_loop(self):
         interval = self.s.get("intervals.news_poll_sec", 20)
+        next_poll = 0.0
         while not self.stop_flag.is_set():
-            t0 = time.time()
             try:
-                self.step_news()
+                fresh = []
+                while True:
+                    try:
+                        it = self.raw_q.get_nowait()
+                    except queue.Empty:
+                        break
+                    if self.j.add_news(it):
+                        fresh.append(it)
+                if time.time() >= next_poll:
+                    next_poll = time.time() + interval
+                    fresh += self.news.poll()
+                if fresh:
+                    self.process_news(fresh)
             except Exception as e:  # noqa: BLE001
                 log.error("Поток новостей: %s\n%s", e, traceback.format_exc())
-            self.stop_flag.wait(max(1.0, interval - (time.time() - t0)))
+            self.news_wake.wait(timeout=max(0.5, next_poll - time.time()))
+            self.news_wake.clear()
 
-    def step_news(self):
-        fresh = self.news.poll()
-        if not fresh:
-            return
+    def process_news(self, fresh):
         log.info("Новых новостей: %d", len(fresh))
         if not self.analyst:
             for it in fresh:
@@ -245,6 +267,8 @@ class Bot:
         nh = self.cal.next_high()
         if nh:
             lines.append(f"Ближайшее макро: {nh}")
+        if self.xstream:
+            lines.append(f"Поток X: {self.xstream.status()}")
         self.tg.send("\n".join(lines))
 
     def handle_commands(self, equity, positions):
@@ -286,10 +310,12 @@ class Bot:
         equity, _ = self.ex.equity()
         self.risk.check(equity)
         threading.Thread(target=self.news_loop, daemon=True, name="news").start()
+        x_on = self.xstream.start() if self.xstream else False
         m = self.risk.metrics(equity)
         self.tg.send(f"🤖 Бот запущен [{self.s.mode}{' dry-run' if self.dry else ''}], баланс {equity:.2f} USDT "
                      f"(резерв {m['reserve']:.2f}), аналитик {'вкл' if self.analyst else 'ВЫКЛ (нет ANTHROPIC_API_KEY)'}, "
-                     f"новости: {len(self.news.tg_channels)} TG-каналов + RSS + анонсы бирж")
+                     f"новости: {len(self.news.tg_channels)} TG-каналов + Truth Social + RSS + анонсы бирж"
+                     f"{' + поток X' if x_on else ''}")
         while True:
             now = time.time()
             try:
@@ -318,6 +344,8 @@ class Bot:
                     self.reviewer.run(apply=self._auto_apply())
             except KeyboardInterrupt:
                 self.stop_flag.set()
+                if self.xstream:
+                    self.xstream.stop.set()
                 self.tg.send("Бот остановлен вручную (Ctrl+C). Позиции остаются под стопами на бирже.")
                 raise
             except Exception as e:  # noqa: BLE001

@@ -56,6 +56,20 @@ if s.has_anthropic:
 else:
     print("[--] ANTHROPIC_API_KEY не задан")
 
+xt = os.getenv("TWITTER_BEARER_TOKEN", "").strip()
+if xt:
+    try:
+        r = requests.get("https://api.x.com/2/users/by/username/elonmusk", headers={"Authorization": f"Bearer {xt}"},
+                         timeout=15)
+        if r.status_code == 200:
+            print(f"[OK] X API ключ работает (чтение, ~0.01$ за эту проверку): id elonmusk = {r.json()['data']['id']}")
+        else:
+            print(f"[FAIL] X API: HTTP {r.status_code}: {r.text[:160]}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[FAIL] X API: {e}")
+else:
+    print("[--] TWITTER_BEARER_TOKEN не задан")
+
 if s.telegram_token:
     try:
         r = requests.get(f"https://api.telegram.org/bot{s.telegram_token}/getMe", timeout=10).json()

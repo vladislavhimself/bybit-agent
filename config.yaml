@@ -16,11 +16,13 @@ sources:
                       MuskTweets, realdonaldtrump_truth, TrumpTruthPosts, whitehouse]
   # Truth Social напрямую (открытый API, без ключей): имя -> id аккаунта
   truthsocial_accounts: {realDonaldTrump: "107780257626128497"}
-  # X (Twitter) через официальный API: нужен TWITTER_BEARER_TOKEN с правом чтения (тариф Basic и выше).
-  # Бесплатный тариф чтение не даёт: источник сам отключится, Маск и Трамп останутся через зеркала выше.
+  # X (Twitter) через официальный API. Оплата по факту: ~0.005$ за пост. Нужен TWITTER_BEARER_TOKEN.
+  # twitter_mode: stream = X Activity API (поток событий в реальном времени, лучший вариант),
+  #               poll   = опрос search/recent раз в twitter_poll_sec (дороже и медленнее), off = выключено
+  twitter_mode: stream
   twitter_accounts: [elonmusk, realDonaldTrump, WhiteHouse, federalreserve, SECGov, cz_binance, saylor,
                      DeItaone, FirstSquawk, unusual_whales, WatcherGuru, Cointelegraph]
-  twitter_poll_sec: 120          # лимит Basic 15 000 постов/месяц: при частом опросе и болтливых аккаунтах не хватит
+  twitter_poll_sec: 120
 
 intervals:
   news_poll_sec: 20              # Telegram опрашивается каждые 20 с, RSS/анонсы раз в минуту

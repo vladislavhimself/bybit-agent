@@ -190,6 +190,8 @@ class NewsCollector:
         Один запрос search/recent на все аккаунты сразу, только новые посты через since_id."""
         token = os.getenv("TWITTER_BEARER_TOKEN", "").strip()
         accounts = self.s.get("sources.twitter_accounts") or []
+        if self.s.get("sources.twitter_mode", "stream") != "poll":
+            return []   # в режиме stream посты приходят через X Activity API (bot/xstream.py)
         if not token or not accounts or self.twitter_disabled:
             return []
         query = "(" + " OR ".join(f"from:{a}" for a in accounts) + ") -is:retweet -is:reply"
