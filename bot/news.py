@@ -63,6 +63,9 @@ class NewsCollector:
         self.tg_channels = settings.get("sources.telegram_channels") or []
         self.session = requests.Session()
         self.session.headers.update(UA)
+        self.last.update({"truth": 0.0, "twitter": 0.0})
+        self.twitter_since_id = None
+        self.twitter_disabled = False
 
     # ---------- источники ----------
     def _telegram(self, now):
@@ -153,11 +156,87 @@ class NewsCollector:
             log.warning("CryptoPanic: %s", ex)
         return items
 
+    def _truthsocial(self, now):
+        """Посты с Truth Social напрямую (открытый API без авторизации). Главный источник по Трампу."""
+        items = []
+        for name, aid in (self.s.get("sources.truthsocial_accounts") or {}).items():
+            try:
+                r = self.session.get(f"https://truthsocial.com/api/v1/accounts/{aid}/statuses",
+                                     params={"limit": 10, "exclude_replies": "true"},
+                                     headers={"Accept": "application/json"}, timeout=15)
+                if r.status_code != 200:
+                    log.debug("truthsocial %s: HTTP %s", name, r.status_code)
+                    continue
+                for st in r.json():
+                    text = _clean(st.get("content", ""))
+                    if not text and st.get("reblog"):
+                        text = "RT: " + _clean(st["reblog"].get("content", ""))
+                    if len(text) < 10:
+                        continue
+                    try:
+                        ts = int(datetime.fromisoformat(st["created_at"].replace("Z", "+00:00")).timestamp())
+                    except (KeyError, ValueError):
+                        ts = now
+                    if now - ts > self.max_age:
+                        continue
+                    items.append({"id": _nid("ts", str(st["id"])), "source": f"truth:{name}", "title": text[:160],
+                                  "summary": text, "url": st.get("url", ""), "published_ts": ts})
+            except (requests.RequestException, ValueError) as e:
+                log.debug("truthsocial %s: %s", name, e)
+        return items
+
+    def _twitter(self, now):
+        """Официальный X API v2 (нужен TWITTER_BEARER_TOKEN с правом чтения, тариф Basic и выше).
+        Один запрос search/recent на все аккаунты сразу, только новые посты через since_id."""
+        token = os.getenv("TWITTER_BEARER_TOKEN", "").strip()
+        accounts = self.s.get("sources.twitter_accounts") or []
+        if not token or not accounts or self.twitter_disabled:
+            return []
+        query = "(" + " OR ".join(f"from:{a}" for a in accounts) + ") -is:retweet -is:reply"
+        params = {"query": query[:512], "max_results": 50, "tweet.fields": "created_at,author_id",
+                  "expansions": "author_id", "user.fields": "username"}
+        if self.twitter_since_id:
+            params["since_id"] = self.twitter_since_id
+        items = []
+        try:
+            r = self.session.get("https://api.x.com/2/tweets/search/recent", params=params,
+                                 headers={"Authorization": f"Bearer {token}"}, timeout=15)
+            if r.status_code in (401, 402, 403):
+                log.error("X API: нет доступа к чтению (HTTP %s). Бесплатный тариф не даёт читать посты. "
+                          "Источник отключён, Маск и Трамп идут через Telegram-зеркала и Truth Social.", r.status_code)
+                self.twitter_disabled = True
+                return []
+            if r.status_code == 429:
+                log.warning("X API: лимит запросов, пауза 15 минут")
+                self.last["twitter"] = now + 900
+                return []
+            data = r.json()
+            users = {u["id"]: u["username"] for u in data.get("includes", {}).get("users", [])}
+            for t in data.get("data", []):
+                ts = int(datetime.fromisoformat(t["created_at"].replace("Z", "+00:00")).timestamp())
+                if now - ts > self.max_age:
+                    continue
+                who = users.get(t.get("author_id"), "x")
+                items.append({"id": _nid("tw", t["id"]), "source": f"twitter:{who}", "title": t["text"][:160],
+                              "summary": t["text"], "url": f"https://x.com/{who}/status/{t['id']}", "published_ts": ts})
+            newest = data.get("meta", {}).get("newest_id")
+            if newest:
+                self.twitter_since_id = newest
+        except (requests.RequestException, ValueError) as e:
+            log.warning("X API: %s", e)
+        return items
+
     # ---------- опрос ----------
     def poll(self):
-        """Вернуть новые новости. Telegram опрашивается каждый вызов, остальное раз в минуту."""
+        """Вернуть новые новости. Telegram опрашивается каждый вызов, Truth Social раз в 30 с, остальное раз в минуту."""
         now = int(time.time())
         items = self._telegram(now)
+        if now - self.last["truth"] >= 30:
+            self.last["truth"] = now
+            items += self._truthsocial(now)
+        if now - self.last["twitter"] >= self.s.get("sources.twitter_poll_sec", 120):
+            self.last["twitter"] = now
+            items += self._twitter(now)
         if now - self.last["binance"] >= 60:
             self.last["binance"] = now
             items += self._binance(now)

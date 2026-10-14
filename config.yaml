@@ -10,8 +10,17 @@ universe:
 
 sources:
   # Публичные Telegram-каналы (читаются через t.me/s/<канал>, без логина). Самый быстрый бесплатный источник.
+  # MuskTweets = зеркало твитов Маска, realdonaldtrump_truth и TrumpTruthPosts = зеркала Truth Social, whitehouse = Белый дом
   telegram_channels: [WatcherGuru, crypto_headlines, cointelegraph, CoinDeskGlobal, wublockchainenglish, BWEnews,
-                      unfolded, binance_announcements, Bybit_Announcements]
+                      unfolded, binance_announcements, Bybit_Announcements,
+                      MuskTweets, realdonaldtrump_truth, TrumpTruthPosts, whitehouse]
+  # Truth Social напрямую (открытый API, без ключей): имя -> id аккаунта
+  truthsocial_accounts: {realDonaldTrump: "107780257626128497"}
+  # X (Twitter) через официальный API: нужен TWITTER_BEARER_TOKEN с правом чтения (тариф Basic и выше).
+  # Бесплатный тариф чтение не даёт: источник сам отключится, Маск и Трамп останутся через зеркала выше.
+  twitter_accounts: [elonmusk, realDonaldTrump, WhiteHouse, federalreserve, SECGov, cz_binance, saylor,
+                     DeItaone, FirstSquawk, unusual_whales, WatcherGuru, Cointelegraph]
+  twitter_poll_sec: 120          # лимит Basic 15 000 постов/месяц: при частом опросе и болтливых аккаунтах не хватит
 
 intervals:
   news_poll_sec: 20              # Telegram опрашивается каждые 20 с, RSS/анонсы раз в минуту
