@@ -124,6 +124,15 @@ class Exchange:
             log.debug("OI %s: %s", symbol, e)
             return []
 
+    def long_short_ratio(self, symbol):
+        """Доля аккаунтов в лонге (0..1) по данным Bybit за последний час. None при ошибке."""
+        try:
+            r = self.market.get_long_short_ratio(category="linear", symbol=symbol, period="1h", limit=1)
+            return float(r["result"]["list"][0]["buyRatio"])
+        except Exception as e:  # noqa: BLE001
+            log.debug("long/short %s: %s", symbol, e)
+            return None
+
     def announcements(self, limit=20):
         r = self.market.get_announcement(locale="en-US", limit=limit)
         return r["result"]["list"]

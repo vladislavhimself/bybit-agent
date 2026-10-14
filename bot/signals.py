@@ -41,8 +41,11 @@ def news_score(base, events, min_importance, now=None, playbook=None):
     return max(-1.0, min(1.0, total)), reasons, used
 
 
-def positioning_score(ticker, oi_hist, ta, whale_net=0.0):
+def positioning_score(ticker, oi_hist, ta, whale_net=0.0, mood=0.0):
     score, reasons = 0.0, []
+    if abs(mood) >= 0.15:
+        score += mood
+        reasons.append(f"настроение рынка (страх/жадность, стейблкоины): {mood:+.2f}")
     if abs(whale_net) >= 0.1:
         score += 0.5 * whale_net
         reasons.append(f"потоки китов за 24ч: {'накопление' if whale_net > 0 else 'давление продаж'} ({whale_net:+.2f})")
@@ -55,6 +58,12 @@ def positioning_score(ticker, oi_hist, ta, whale_net=0.0):
         score += 0.6; reasons.append(f"фандинг {f*100:.3f}% — переполнены шорты")
     elif f <= -0.0002:
         score += 0.3; reasons.append(f"фандинг {f*100:.3f}% — перекос в шорт")
+    ls = ticker.get("long_ratio")
+    if ls is not None:
+        if ls >= 0.68:
+            score -= 0.25; reasons.append(f"{ls*100:.0f}% аккаунтов в лонге: толпа перегружена")
+        elif ls <= 0.38:
+            score += 0.25; reasons.append(f"{ls*100:.0f}% аккаунтов в лонге: толпа в шорте")
     if len(oi_hist) >= 12 and oi_hist[0] > 0:
         oi_chg = (oi_hist[-1] / oi_hist[0] - 1) * 100
         if abs(oi_chg) >= 5:
@@ -65,11 +74,11 @@ def positioning_score(ticker, oi_hist, ta, whale_net=0.0):
     return max(-1.0, min(1.0, score)), reasons
 
 
-def build_signal(symbol, base, ta, ticker, oi_hist, events, params, now=None, playbook=None, whale_net=0.0):
+def build_signal(symbol, base, ta, ticker, oi_hist, events, params, now=None, playbook=None, whale_net=0.0, mood=0.0):
     p = params
     ns, nreasons, used = news_score(base, events, p["min_news_importance"], now,
                                     playbook if p.get("use_playbook", True) else None)
-    ps, preasons = positioning_score(ticker, oi_hist, ta, whale_net)
+    ps, preasons = positioning_score(ticker, oi_hist, ta, whale_net, mood)
     ts = ta["score"]
     nw, tw, pw = p["news_weight"], p["ta_weight"], p["positioning_weight"]
     # Аддитивное сведение: сильная новость сама по себе даёт вход, ТА и позиционирование усиливают или гасят её.

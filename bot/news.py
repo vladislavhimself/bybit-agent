@@ -17,10 +17,25 @@ log = logging.getLogger("news")
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36"}
 
 RSS_SOURCES = {
+    # крипто-издания
     "coindesk": "https://www.coindesk.com/arc/outboundfeeds/rss/",
     "cointelegraph": "https://cointelegraph.com/rss",
     "theblock": "https://www.theblock.co/rss.xml",
     "decrypt": "https://decrypt.co/feed",
+    "cryptoslate": "https://cryptoslate.com/feed/",
+    "thedefiant": "https://thedefiant.io/feed",
+    "newsbtc": "https://www.newsbtc.com/feed/",
+    "beincrypto": "https://beincrypto.com/feed/",
+    "utoday": "https://u.today/rss",
+    "cryptonews": "https://cryptonews.com/news/feed/",
+    "ambcrypto": "https://ambcrypto.com/feed/",
+    # регуляторы и ФРС: первоисточники решений
+    "fed_press": "https://www.federalreserve.gov/feeds/press_all.xml",
+    "sec_press": "https://www.sec.gov/news/pressreleases.rss",
+    "cftc_press": "https://www.cftc.gov/RSS/RSSGP/rssgp.xml",
+    # макро и фондовый рынок
+    "cnbc_markets": "https://www.cnbc.com/id/10000664/device/rss/rss.html",
+    "cnbc_top": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
 }
 BINANCE_ANN = ("https://www.binance.com/bapi/composite/v1/public/cms/article/list/query"
                "?type=1&pageNo=1&pageSize=20&catalogId=48")

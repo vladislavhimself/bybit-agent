@@ -97,9 +97,9 @@ class CostTracker:
 
 
 class Analyst:
-    def __init__(self, settings, journal, playbook=None, calendar=None, whales=None):
+    def __init__(self, settings, journal, playbook=None, calendar=None, whales=None, mood=None):
         self.s, self.j = settings, journal
-        self.playbook, self.calendar, self.whales = playbook, calendar, whales
+        self.playbook, self.calendar, self.whales, self.mood = playbook, calendar, whales, mood
         self.client = anthropic.Anthropic(max_retries=3, timeout=90.0)
         self.model = settings.get("llm.model")
         self.cheap = settings.get("llm.cheap_model")
@@ -144,6 +144,10 @@ class Analyst:
             w = self.whales.text(24)
             if w:
                 parts.append(w)
+        if self.mood:
+            m = self.mood.text()
+            if m:
+                parts.append(m)
         return "\n\n".join(parts)
 
     def prefilter(self, title, summary):

@@ -14,7 +14,8 @@ sources:
   telegram_channels: [WatcherGuru, crypto_headlines, cointelegraph, CoinDeskGlobal, wublockchainenglish, BWEnews,
                       unfolded, binance_announcements, Bybit_Announcements,
                       MuskTweets, realdonaldtrump_truth, TrumpTruthPosts, whitehouse,
-                      whale_alert_io, whalebotalerts]
+                      whale_alert_io, whalebotalerts,
+                      glassnode, cryptoquant_official, ForkLog, incrypted]
   # Каналы, чьи сообщения о крупных переводах разбираются без модели (bot/whales.py)
   whale_channels: [whale_alert_io]
   whale_min_usd: 50000000

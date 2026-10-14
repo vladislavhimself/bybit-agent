@@ -16,6 +16,7 @@ from .config import LOGS, Settings
 from .exchange import Exchange
 from .executor import Executor
 from .journal import Journal
+from .macro import MarketMood
 from .news import NewsCollector
 from .notify import Telegram
 from .playbook import Playbook
@@ -56,7 +57,9 @@ class Bot:
         self.risk = RiskManager(self.s, self.ex, self.j, self.cal)
         self.exe = Executor(self.s, self.ex, self.risk, self.j, self.tg)
         self.whales = WhaleFlows(self.j)
-        self.analyst = Analyst(self.s, self.j, self.playbook, self.cal, self.whales) if self.s.has_anthropic else None
+        self.mood = MarketMood()
+        self.analyst = (Analyst(self.s, self.j, self.playbook, self.cal, self.whales, self.mood)
+                        if self.s.has_anthropic else None)
         self.reviewer = Reviewer(self.s, self.j, self.tg) if self.s.has_anthropic else None
         self.news = NewsCollector(self.ex, self.j, self.s)
         self.events_q = queue.Queue()
@@ -148,6 +151,7 @@ class Bot:
         dfd = self.ex.klines(symbol, "D", 250)
         ta = snapshot(df1h, df4h, df15, dfd)
         tk = self.ex.ticker(symbol)
+        tk["long_ratio"] = self.ex.long_short_ratio(symbol)
         oi = self.ex.open_interest(symbol, 24)
         self.cache[symbol] = (time.time(), ta, tk, oi)
         return ta, tk, oi
@@ -175,7 +179,7 @@ class Bot:
             if not ta:
                 continue
             sig = build_signal(sym, inst[sym]["base"], ta, tk, oi, events, params, playbook=self.playbook,
-                               whale_net=self.whales.net_score(inst[sym]["base"]))
+                               whale_net=self.whales.net_score(inst[sym]["base"]), mood=self.mood.score())
             if sig:
                 candidates.append((sig, ta, tk))
         candidates.sort(key=lambda x: x[0].strength, reverse=True)
@@ -333,6 +337,7 @@ class Bot:
             now = time.time()
             try:
                 self.cal.refresh()
+                self.mood.refresh()
                 equity, _ = self.ex.equity()
                 positions = self.ex.positions()
                 self.handle_commands(equity, positions)

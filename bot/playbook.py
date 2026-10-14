@@ -7,6 +7,8 @@ from .config import DATA
 PATH = DATA / "playbook.json"
 PATH_STOCKS = DATA / "playbook_stocks.json"
 PATH_RULES = DATA / "ta_rules.json"
+PATH_FOMC = DATA / "fomc_hourly.json"
+PATH_REGIMES = DATA / "regimes.json"
 
 
 def _load(p):
@@ -23,6 +25,8 @@ class Playbook:
         self.data = _load(PATH)
         self.stocks = _load(PATH_STOCKS)
         self.rules = _load(PATH_RULES)
+        self.fomc = _load(PATH_FOMC)
+        self.regimes = _load(PATH_REGIMES)
 
     def prior(self, event_type, direction):
         """Вернуть статистику для (тип, направление) или None."""
@@ -53,6 +57,32 @@ class Playbook:
                     lines.append(f"- {k}: n={v['n']}, 1д {v['med_1d']:+.1f}%, 5д {v['med_5d']:+.1f}%, "
                                  f"20д {v['med_20d']:+.1f}%, отработало {v['hit_5d'] * 100:.0f}%")
                 parts.append("\n".join(lines))
+        f = self.fomc.get("stats")
+        if f:
+            parts.append(
+                f"FOMC и BTC (часовые данные, {f['n']} решений 2022-2026): средний ход за 1ч {f['mean_abs_1h']:.1f}%, "
+                f"за 24ч {f['mean_abs_24h']:.1f}%, размах первых 4ч {f['mean_range_4h']:.1f}%; рост через сутки в "
+                f"{f['up_share_24h'] * 100:.0f}% случаев; движение первого часа разворачивалось к суткам в "
+                f"{f['reversal_share'] * 100:.0f}% случаев (первый импульс после ФРС ненадёжен). "
+                f"Повышения ставки: медиана 24ч {f['hikes']['med_24h']:+.1f}% (n={f['hikes']['n']}); "
+                f"без изменения: {f['holds']['med_24h']:+.1f}% (n={f['holds']['n']}); "
+                f"снижения: {f['cuts']['med_24h']:+.1f}% (n={f['cuts']['n']}).")
+        rg = self.regimes
+        if rg:
+            lines = ["Режимы на дневных данных (доходность через 20д и преимущество над базой):"]
+            for key in ("spx_after_vix", "btc_after_vix", "btc_cross"):
+                for s in rg.get(key, []):
+                    lines.append(f"- {s['label']}: n={s['n']}, 20д {s['mean20']:+.1f}% ({s['hit20'] * 100:.0f}%), "
+                                 f"преимущество {s['edge20']:+.1f}%")
+            corr = rg.get("btc_corr_daily", {})
+            if corr:
+                lines.append("- корреляция дневных доходностей BTC: " + "; ".join(
+                    f"{k}: с S&P {v['spx']:+.2f}, с долларом {v['dxy']:+.2f}" for k, v in corr.items()))
+            dd = rg.get("btc_drawdowns_30")
+            if dd:
+                lines.append(f"- просадки BTC глубже 30%: {dd['n']} раз, медианная глубина {dd['median_depth']:.0f}%, "
+                             f"медиана до восстановления {dd['median_days_to_recover']:.0f} дней")
+            parts.append("\n".join(lines))
         for key in ("SPX", "BTC"):
             r = self.rules.get(key)
             if r and r.get("rules"):
