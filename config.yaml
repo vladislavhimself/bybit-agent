@@ -1,0 +1,73 @@
+# Все проценты указаны в процентах от торгового капитала (equity минус защищённый резерв прибыли)
+
+quote: USDT
+
+universe:
+  top_n_by_turnover: 40          # сколько самых ликвидных крипто-пар сканировать
+  min_turnover_24h_usd: 15000000 # ниже этого оборота за сутки пару не трогаем (защита от неликвида)
+  always: [BTCUSDT, ETHUSDT, SOLUSDT]
+  blacklist: []
+
+sources:
+  # Публичные Telegram-каналы (читаются через t.me/s/<канал>, без логина). Самый быстрый бесплатный источник.
+  telegram_channels: [WatcherGuru, crypto_headlines, cointelegraph, CoinDeskGlobal, wublockchainenglish, BWEnews,
+                      unfolded, binance_announcements, Bybit_Announcements]
+
+intervals:
+  news_poll_sec: 20              # Telegram опрашивается каждые 20 с, RSS/анонсы раз в минуту
+  scan_sec: 300
+  manage_sec: 30
+  balance_report_hours: 4
+  review_every_closed_trades: 8
+  review_every_hours: 24
+
+risk:
+  max_leverage: 15               # жёсткий потолок, реальное плечо считается от стопа и обычно 1-4
+  risk_per_trade_pct:            # сколько теряем, если сработает стоп
+    low: 0.4
+    medium: 0.8
+    high: 1.5
+    conviction: 3.0              # только при полном согласии всех сигналов + подтверждении модели
+  max_open_positions: 4
+  max_total_exposure_x: 3.0      # суммарный объём позиций не больше 3x от торгового капитала
+  daily_loss_limit_pct: 6
+  weekly_loss_limit_pct: 12
+  kill_switch_drawdown_pct: 25   # просадка от пика, при которой бот останавливается и ждёт /resume
+  stop_atr_mult: 1.5
+  tp_levels:                     # частичные тейки: доля позиции и уровень в R (R = расстояние до стопа)
+    - {r: 1.0, part: 0.40}
+    - {r: 2.5, part: 0.35}
+  # остаток (25%) ведётся трейлингом; после первого тейка стоп переносится в безубыток
+  breakeven_after_tp1: true
+  trail_after_r: 1.0
+  max_hours_in_trade: 48
+  min_notional_usd: 6
+  # Защита прибыли: каждый раз, когда торговый капитал вырос на profit_lock_step_pct от базы,
+  # profit_lock_pct этого прироста уходит в резерв и больше никогда не участвует в торговле
+  profit_lock_step_pct: 10
+  profit_lock_pct: 50
+  # Запрет новых входов вокруг макро-релизов высокой важности (CPI, FOMC, NFP)
+  macro_blackout_min_before: 30
+  macro_blackout_min_after: 15
+  # Реакция на новости по открытым позициям
+  news_exit_min_importance: 7    # контр-новость такой важности закрывает позицию
+  news_flip: true                # и, если сигнал в другую сторону достаточно силён, открывает обратную
+
+signals:
+  entry_threshold: 0.55
+  conviction_threshold: 0.85
+  news_weight: 1.0               # вклад новости (0..1) умножается на вес и складывается с остальными
+  ta_weight: 0.6
+  positioning_weight: 0.4
+  min_news_importance: 5         # новости слабее этого в счёт не идут
+  use_playbook: true             # корректировать вклад новости историческим откликом на такой тип событий
+
+llm:
+  model: claude-opus-5-5         # основной аналитик
+  cheap_model: claude-haiku-5-5  # предварительный фильтр новостей (дёшево)
+  review_model: claude-opus-5-5  # разбор сделок и самообучение
+  daily_budget_usd: 4            # при превышении до конца суток всё переводится на дешёвую модель
+
+learning:
+  enabled: true
+  auto_apply: true               # на demo/testnet правки параметров применяются сами; на live только после /approve

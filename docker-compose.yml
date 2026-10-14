@@ -1,0 +1,33 @@
+# Бот + n8n на одном сервере. Запуск: docker compose up -d
+# Логи бота: docker compose logs -f bot
+services:
+  bot:
+    build: .
+    container_name: bybit-agent
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config.yaml:/app/config.yaml:ro
+    restart: unless-stopped
+    mem_limit: 512m
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_HOST=0.0.0.0
+      - N8N_PORT=5678
+      - GENERIC_TIMEZONE=Europe/Moscow
+      - TZ=Europe/Moscow
+      # Для доступа по домену с https раскомментировать и подставить свой домен:
+      # - N8N_PROTOCOL=https
+      # - WEBHOOK_URL=https://n8n.example.com/
+    volumes:
+      - n8n_data:/home/node/.n8n
+    restart: unless-stopped
+
+volumes:
+  n8n_data:

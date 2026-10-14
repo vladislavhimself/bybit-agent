@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+logs/
+data/*.db
+data/*.db-journal
+data/history/
+data/backtest_trades.csv
+data/learned_params.json
