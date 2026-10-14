@@ -19,7 +19,7 @@ sources:
   # X (Twitter) через официальный API. Оплата по факту: ~0.005$ за пост. Нужен TWITTER_BEARER_TOKEN.
   # twitter_mode: stream = X Activity API (поток событий в реальном времени, лучший вариант),
   #               poll   = опрос search/recent раз в twitter_poll_sec (дороже и медленнее), off = выключено
-  twitter_mode: off              # платно, пока выключено; stream = X Activity API, poll = опрос search/recent
+  twitter_mode: "off"              # платно, пока выключено; stream = X Activity API, poll = опрос search/recent
   # Аккаунты по силе влияния на крипторынок (для режимов stream/poll):
   # политика и макро: elonmusk, realDonaldTrump, WhiteHouse, federalreserve, USTreasury, SecScottBessent, NickTimiraos
   # регуляторы: SECGov, CFTC
