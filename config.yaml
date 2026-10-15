@@ -58,6 +58,7 @@ risk:
   max_open_positions: 5
   max_same_direction: 3          # альты ходят вместе: не больше 3 позиций в одну сторону
   max_trades_per_event: 2        # не больше 2 сделок на одну и ту же новость
+  max_direction_risk_pct: 2.5    # суммарный риск всех позиций в одну сторону (если все стопы сработают)
   max_total_exposure_x: 3.0      # суммарный объём позиций не больше 3x от торгового капитала
   daily_loss_limit_pct: 6
   weekly_loss_limit_pct: 12
@@ -82,6 +83,14 @@ risk:
   news_exit_min_importance: 7    # контр-новость такой важности закрывает позицию
   news_flip: true                # и, если сигнал в другую сторону достаточно силён, открывает обратную
 
+entry:
+  mode: pullback                 # pullback = лимитный ордер на откате; market = сразу по рынку
+  pullback_atr: 0.4              # насколько ниже (для лонга) текущей цены ставим лимит, в ATR(1ч)
+  already_pulled_atr: 0.15       # если цена и так не дальше этого от 15-минутной средней, входим сразу
+  wait_minutes: 90               # сколько ждать отката, потом ордер снимается
+  impulse_min_importance: 8      # исключение: очень важная и свежая новость = вход по рынку
+  impulse_max_age_min: 15
+
 psychology:
   runup_hours: 48            # окно, в котором смотрим ход цены ДО новости
   runup_pct: 8               # ход в сторону новости больше этого = новость во многом в цене
@@ -105,6 +114,9 @@ llm:
   cheap_model: claude-haiku-5-5  # предварительный фильтр новостей (дёшево)
   review_model: claude-opus-5-5  # разбор сделок и самообучение
   daily_budget_usd: 4            # при превышении до конца суток всё переводится на дешёвую модель
+  # Второстепенные источники (пересказы, обзоры): новости из них разбирает дешёвая модель
+  cheap_sources: [ambcrypto, utoday, newsbtc, beincrypto, cryptonews, cryptoslate, coinjournal, thedefiant,
+                  tg:crypto_headlines, tg:incrypted, tg:ForkLog, tg:MuskTweets, tg:whalebotalerts]
 
 learning:
   enabled: true

@@ -203,6 +203,26 @@ class Exchange:
                                    timeInForce="GTC", reduceOnly=reduce_only, positionIdx=0)
         return r["result"]["orderId"]
 
+    def order_status(self, symbol, order_id):
+        """Состояние ордера: открытый или из истории. None, если не найден."""
+        for fn in (self.trade.get_open_orders, self.trade.get_order_history):
+            try:
+                lst = fn(category="linear", symbol=symbol, orderId=order_id)["result"]["list"]
+            except Exception as e:  # noqa: BLE001
+                log.debug("order_status %s: %s", order_id, e)
+                lst = []
+            if lst:
+                o = lst[0]
+                return {"status": o.get("orderStatus"), "filled": float(o.get("cumExecQty") or 0),
+                        "avg": float(o.get("avgPrice") or 0), "qty": float(o.get("qty") or 0)}
+        return None
+
+    def cancel_order(self, symbol, order_id):
+        try:
+            self.trade.cancel_order(category="linear", symbol=symbol, orderId=order_id)
+        except InvalidRequestError as e:
+            log.debug("cancel_order %s: %s", order_id, e)
+
     def cancel_all(self, symbol):
         try:
             self.trade.cancel_all_orders(category="linear", symbol=symbol)

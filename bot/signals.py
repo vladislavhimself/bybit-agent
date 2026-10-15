@@ -41,8 +41,9 @@ def news_score(base, events, min_importance, now=None, playbook=None, df1h=None,
         if psych_cfg and df1h is not None and direct:
             k1, r1 = psychology.priced_in(e, df1h, psych_cfg)
             k2, r2 = psychology.reaction(e, df1h, psych_cfg, now)
-            contrib *= k1 * k2
-            reasons += [r for r in (r1, r2) if r]
+            k3, r3 = psychology.typical_move_done(e, df1h, playbook)
+            contrib *= k1 * k2 * min(k3, 1.0 if k2 < 0 else k3)
+            reasons += [r for r in (r1, r2, r3) if r]
         cr = e.get("contrarian_risk") or 0.0
         if cr >= 0.5:
             contrib *= (1 - 0.5 * cr)

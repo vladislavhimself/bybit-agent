@@ -135,19 +135,28 @@ class RiskManager:
                 "halted": self.halted, "halt_reason": self.halt_reason}
 
     # ---------- проверки перед входом ----------
-    def can_open(self, symbol, open_trades, positions, equity, direction=None, event_key=""):
+    def can_open(self, symbol, open_trades, positions, equity, direction=None, event_key="", tier=None):
+        """open_trades: открытые сделки + отложенные ордера (у каждого symbol, side, entry, stop_init, qty, event_key)."""
         r = self.s.get("risk")
         t = self.tradable(equity)
         if any(x["symbol"] == symbol for x in open_trades) or any(p["symbol"] == symbol for p in positions):
-            return False, "уже есть позиция по символу"
+            return False, "уже есть позиция или ордер по символу"
         if len(open_trades) >= r["max_open_positions"]:
             return False, f"достигнут лимит позиций {r['max_open_positions']}"
         # Альткоины ходят вместе: много позиций в одну сторону = одна большая ставка на рынок
         if direction:
             side = "Buy" if direction == "long" else "Sell"
-            same = sum(1 for x in open_trades if x["side"] == side)
-            if same >= r.get("max_same_direction", 3):
-                return False, f"уже {same} позиции в ту же сторону (лимит {r.get('max_same_direction', 3)})"
+            same_side = [x for x in open_trades if x["side"] == side]
+            if len(same_side) >= r.get("max_same_direction", 3):
+                return False, f"уже {len(same_side)} позиции в ту же сторону (лимит {r.get('max_same_direction', 3)})"
+            # суммарный риск по направлению, если все стопы сработают
+            risk_now = sum(abs((x.get("entry") or 0) - (x.get("stop_init") or x.get("stop") or 0)) * (x.get("qty_init") or x.get("qty") or 0)
+                           for x in same_side)
+            new_risk = t * r["risk_per_trade_pct"].get(tier or "low", 0.4) / 100
+            cap = t * r.get("max_direction_risk_pct", 2.5) / 100
+            if risk_now + new_risk > cap:
+                return False, (f"риск по направлению {risk_now + new_risk:.2f} USDT превысит лимит {cap:.2f} "
+                               f"({r.get('max_direction_risk_pct', 2.5)}% капитала)")
         if event_key:
             n_ev = sum(1 for x in open_trades if (x.get("event_key") or "") == event_key)
             if n_ev >= r.get("max_trades_per_event", 2):

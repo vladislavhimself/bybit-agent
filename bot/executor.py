@@ -29,56 +29,160 @@ class Executor:
             plan = plan[:-1]
         return plan
 
+    def _sig_payload(self, sig, ta):
+        return {"direction": sig.direction, "strength": sig.strength, "tier": sig.tier, "components": sig.components,
+                "reasons": sig.reasons, "regime": sig.regime, "news_driven": sig.news_driven,
+                "event_key": sig.event_key, "atr": ta["atr"],
+                "ta": {k: ta.get(k) for k in ("trend_1h", "trend_4h", "trend_d", "breakout", "rsi")}}
+
+    @staticmethod
+    def _sig_from_payload(symbol, p):
+        from .signals import Signal
+        return Signal(symbol=symbol, direction=p["direction"], strength=p["strength"], tier=p["tier"],
+                      components=p["components"], reasons=p["reasons"], regime=p["regime"],
+                      news_driven=p["news_driven"], events=[], event_key=p.get("event_key", ""))
+
+    def _entry_mode(self, sig, ta):
+        """market: входить сразу; pullback: ждать откат лимитным ордером."""
+        e = self.s.get("entry") or {}
+        if e.get("mode", "pullback") != "pullback":
+            return "market", "режим market"
+        long = sig.direction == "long"
+        pull = ta.get("pull_15m", 0.0)
+        # цена и так у 15-минутной средней или ниже неё (для лонга): откат уже случился
+        if (long and pull <= e.get("already_pulled_atr", 0.15)) or (not long and pull >= -e.get("already_pulled_atr", 0.15)):
+            return "market", f"цена у средней 15м (отрыв {pull:+.2f} ATR), откат уже есть"
+        # очень важная и свежая новость: ждать нечего, импульс только начинается
+        if sig.news_driven and sig.events:
+            newest = max(sig.events, key=lambda x: x["ts"])
+            age_min = (time.time() - newest["ts"]) / 60
+            if newest["importance"] >= e.get("impulse_min_importance", 8) and age_min <= e.get("impulse_max_age_min", 15):
+                return "market", f"новость важности {newest['importance']} вышла {age_min:.0f} мин назад"
+        return "pullback", f"цена оторвалась от средней 15м на {pull:+.2f} ATR, ждём откат"
+
     def open(self, sig, ta, equity, positions):
         r = self.s.get("risk")
+        e = self.s.get("entry") or {}
         price = ta["close"]
         dist = ta["atr"] * r["stop_atr_mult"]
         long = sig.direction == "long"
-        stop = price - dist if long else price + dist
         side = "Buy" if long else "Sell"
-        qty, lev = self.risk.size(sig.symbol, equity, price, stop, sig.tier, positions)
+        mode, why = self._entry_mode(sig, ta)
+        if mode == "market":
+            stop = price - dist if long else price + dist
+            qty, lev = self.risk.size(sig.symbol, equity, price, stop, sig.tier, positions)
+            if qty is None:
+                log.info("%s: пропуск, %s", sig.symbol, lev)
+                return None
+            try:
+                self.ex.set_leverage(sig.symbol, lev)
+                order_id = self.ex.place_market(sig.symbol, side, qty, sl=stop)
+            except Exception as ex:  # noqa: BLE001
+                log.error("%s: ошибка открытия: %s", sig.symbol, ex)
+                self.tg.send(f"⚠️ Не удалось открыть {fmt.base_of(sig.symbol)} {sig.direction}: {str(ex)[:120]}")
+                return None
+            sig.reasons.append("вход по рынку: " + why)
+            return self._finish_entry(sig, ta["atr"], dist, lev, order_id, equity, price, qty)
+
+        # --- вход на откате: лимитный ордер ниже/выше рынка ---
+        k = e.get("pullback_atr", 0.4)
+        limit = price - k * ta["atr"] if long else price + k * ta["atr"]
+        stop = limit - dist if long else limit + dist
+        qty, lev = self.risk.size(sig.symbol, equity, limit, stop, sig.tier, positions)
         if qty is None:
             log.info("%s: пропуск, %s", sig.symbol, lev)
             return None
         try:
             self.ex.set_leverage(sig.symbol, lev)
-            order_id = self.ex.place_market(sig.symbol, side, qty, sl=stop)
-        except Exception as e:  # noqa: BLE001
-            log.error("%s: ошибка открытия: %s", sig.symbol, e)
-            self.tg.send(f"⚠️ Не удалось открыть {sig.symbol} {sig.direction}: {e}")
+            order_id = self.ex.place_limit(sig.symbol, side, qty, limit, reduce_only=False)
+        except Exception as ex:  # noqa: BLE001
+            log.error("%s: ошибка лимитного ордера: %s", sig.symbol, ex)
+            self.tg.send(f"⚠️ Не удалось выставить ордер {fmt.base_of(sig.symbol)} {sig.direction}: {str(ex)[:120]}")
             return None
-        entry = price
+        wait = int(e.get("wait_minutes", 90))
+        sig.reasons.append("вход на откате: " + why)
+        payload = self._sig_payload(sig, ta)
+        payload.update({"lev": lev, "dist": dist})
+        self.j.add_pending({"symbol": sig.symbol, "side": side, "qty": qty, "price": limit, "stop": stop,
+                            "order_id": order_id, "expires_ts": int(time.time()) + wait * 60,
+                            "event_key": sig.event_key, "payload": payload})
+        base = fmt.base_of(sig.symbol)
+        self.tg.send(f"⏳ ОРДЕР НА ОТКАТ: {base}, {'ЛОНГ' if long else 'ШОРТ'}, размер {fmt.TIER_RU.get(sig.tier, sig.tier)}\n"
+                     f"Сейчас {price:g}, ждём {limit:g} (откат {k} ATR), стоп {stop:g}, объём {qty:g} {base}, плечо {lev}x\n"
+                     f"Если за {wait} мин цена не придёт, ордер снимется\n"
+                     f"Почему: {'; '.join(fmt.short_reasons(sig, ta))}")
+        return -1
+
+    def _finish_entry(self, sig, atr, dist, lev, order_id, equity, fallback_price, fallback_qty):
+        """Позиция уже есть на бирже: уточнить вход, поставить стоп и тейки, записать в журнал, сообщить."""
+        r = self.s.get("risk")
+        long = sig.direction == "long"
+        side = "Buy" if long else "Sell"
+        entry, qty = fallback_price, fallback_qty
         for _ in range(5):
-            time.sleep(1)
             pos = [p for p in self.ex.positions() if p["symbol"] == sig.symbol]
             if pos:
                 entry, qty = pos[0]["entry"], pos[0]["qty"]
                 break
-        # стоп и тейки пересчитываем от фактической цены входа
+            time.sleep(1)
         stop = entry - dist if long else entry + dist
         try:
             self.ex.set_stop_loss(sig.symbol, stop)
-        except Exception as e:  # noqa: BLE001
-            log.warning("%s: не удалось уточнить стоп: %s", sig.symbol, e)
+        except Exception as ex:  # noqa: BLE001
+            log.warning("%s: не удалось поставить стоп: %s", sig.symbol, ex)
         plan = self._tp_plan(sig.symbol, qty, entry, dist, long)
         close_side = "Sell" if long else "Buy"
         for lvl in plan:
             try:
                 lvl["order_id"] = self.ex.place_limit(sig.symbol, close_side, lvl["qty"], lvl["price"])
-            except Exception as e:  # noqa: BLE001
-                log.warning("%s: тейк %.2fR не выставлен: %s", sig.symbol, lvl["r"], e)
+            except Exception as ex:  # noqa: BLE001
+                log.warning("%s: тейк %.2fR не выставлен: %s", sig.symbol, lvl["r"], ex)
         final_tp = plan[-1]["price"] if plan else entry + dist * 2.5 * (1 if long else -1)
         tid = self.j.open_trade({
             "symbol": sig.symbol, "side": side, "qty": qty, "entry": entry, "stop": stop, "tp": final_tp,
             "tier": sig.tier, "score": sig.components["total"], "confidence": sig.strength,
-            "reasons": sig.reasons, "regime": sig.regime, "atr": ta["atr"], "leverage": lev,
+            "reasons": sig.reasons, "regime": sig.regime, "atr": atr, "leverage": lev,
             "order_id": order_id, "news_driven": sig.news_driven, "tp_plan": plan, "event_key": sig.event_key,
         })
         risk_pct = r["risk_per_trade_pct"][sig.tier]
-        tradable = self.risk.tradable(equity)
+        ta_short = {"trend_1h": 0, "trend_4h": 0, "trend_d": 0, "breakout": 0, "rsi": 0}
         self.tg.send(fmt.entry_message(sig, entry, qty, lev, stop, plan, risk_pct, abs(entry - stop) * qty,
-                                       tradable, equity, ta))
+                                       self.risk.tradable(equity), equity, ta_short))
         return tid
+
+    def check_pendings(self, equity):
+        """Отложенные ордера: исполнился -> оформить сделку; истёк -> снять."""
+        now = time.time()
+        for p in self.j.pendings():
+            st = self.ex.order_status(p["symbol"], p["order_id"])
+            status = (st or {}).get("status", "")
+            filled = (st or {}).get("filled", 0.0)
+            pay = p["payload"]
+            sig = self._sig_from_payload(p["symbol"], pay)
+            if status == "Filled" or (filled > 0 and (now >= p["expires_ts"] or status in ("Cancelled", "PartiallyFilledCanceled"))):
+                if status != "Filled":
+                    self.ex.cancel_order(p["symbol"], p["order_id"])
+                self.j.remove_pending(p["id"])
+                self._finish_entry(sig, pay["atr"], pay["dist"], pay["lev"], p["order_id"], equity,
+                                   (st or {}).get("avg") or p["price"], filled or p["qty"])
+            elif status in ("Cancelled", "Rejected", "Deactivated"):
+                self.j.remove_pending(p["id"])
+                log.info("%s: отложенный ордер %s (%s)", p["symbol"], status, p["order_id"])
+            elif now >= p["expires_ts"]:
+                self.ex.cancel_order(p["symbol"], p["order_id"])
+                self.j.remove_pending(p["id"])
+                self.tg.send(f"⌛ {fmt.base_of(p['symbol'])}: откат к {p['price']:g} не случился, ордер снят без сделки")
+
+    def cancel_pendings(self, reason, symbols=None):
+        n = 0
+        for p in self.j.pendings():
+            if symbols is not None and p["symbol"] not in symbols:
+                continue
+            self.ex.cancel_order(p["symbol"], p["order_id"])
+            self.j.remove_pending(p["id"])
+            n += 1
+            log.info("%s: отложенный ордер снят: %s", p["symbol"], reason)
+        return n
 
     # ---------- сопровождение ----------
     def manage(self):
@@ -153,6 +257,18 @@ class Executor:
         min_imp = r.get("news_exit_min_importance", 7)
         inst = self.ex.instruments()
         closed = []
+        # отложенные ордера против новости снимаем сразу
+        for p in self.j.pendings():
+            base = inst.get(p["symbol"], {}).get("base", "")
+            long = p["side"] == "Buy"
+            for e in events:
+                if e["importance"] < min_imp or e["confidence"] < 0.6:
+                    continue
+                if not (base in e["affected"] or (e["market_wide"] and e["importance"] >= 8)):
+                    continue
+                if (e["direction"] == "bearish" and long) or (e["direction"] == "bullish" and not long):
+                    self.cancel_pendings("контр-новость", symbols={p["symbol"]})
+                    break
         for t in self.j.open_trades():
             base = inst.get(t["symbol"], {}).get("base", "")
             long = t["side"] == "Buy"
@@ -224,7 +340,7 @@ class Executor:
                 self.tg.send(f"ℹ️ Уточнение по {fmt.base_of(t['symbol'])}: результат {pnl:+.2f} USDT")
 
     def close_all(self, reason):
-        n = 0
+        n = self.cancel_pendings(reason)
         for t in self.j.open_trades():
             self._close_now(t, reason)
             n += 1

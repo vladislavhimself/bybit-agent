@@ -188,8 +188,10 @@ class Analyst:
             user += f"\n{ctx}\n"
         if lessons_text:
             user += f"\nУроки из прошлых сделок:\n{lessons_text}\n"
+        cheap_src = set(self.s.get("llm.cheap_sources") or [])
+        model = self.cheap if source in cheap_src else self._main_model()
         try:
-            ev = self._parse(self._main_model(), SYSTEM_NEWS, user, NewsEvent)
+            ev = self._parse(model, SYSTEM_NEWS, user, NewsEvent)
         except anthropic.RateLimitError as e:
             log.warning("classify rate limit: %s", e)
             time.sleep(5)

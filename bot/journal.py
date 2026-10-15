@@ -22,6 +22,10 @@ CREATE TABLE IF NOT EXISTS trades (
     opened_ts INTEGER, closed_ts INTEGER, exit REAL, pnl REAL, pnl_r REAL, status TEXT, close_reason TEXT,
     order_id TEXT, news_driven INTEGER, qty_init REAL, tp_plan TEXT, tp_hits INTEGER DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS pending (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, side TEXT, qty REAL, price REAL, stop REAL, order_id TEXT,
+    created_ts INTEGER, expires_ts INTEGER, event_key TEXT, payload TEXT
+);
 CREATE TABLE IF NOT EXISTS lessons (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, text TEXT, source TEXT);
 CREATE TABLE IF NOT EXISTS equity (ts INTEGER PRIMARY KEY, equity REAL);
 CREATE TABLE IF NOT EXISTS reviews (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, summary TEXT, changes TEXT, applied INTEGER);
@@ -106,6 +110,23 @@ class Journal:
              t["confidence"], json.dumps(t["reasons"], ensure_ascii=False), t["regime"], t["atr"], t["leverage"],
              int(time.time()), t.get("order_id", ""), int(t.get("news_driven", False)), t["qty"],
              json.dumps(t.get("tp_plan", [])), t.get("event_key", "")))
+
+    # ---- отложенные входы (лимитные ордера на откат) ----
+    def add_pending(self, p: dict) -> int:
+        return self._run(
+            "INSERT INTO pending(symbol,side,qty,price,stop,order_id,created_ts,expires_ts,event_key,payload) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (p["symbol"], p["side"], p["qty"], p["price"], p["stop"], p["order_id"], int(time.time()),
+             p["expires_ts"], p.get("event_key", ""), json.dumps(p["payload"], ensure_ascii=False)))
+
+    def pendings(self):
+        rows = self._run("SELECT * FROM pending", (), "all")
+        for r in rows:
+            r["payload"] = json.loads(r["payload"] or "{}")
+        return rows
+
+    def remove_pending(self, pid):
+        self._run("DELETE FROM pending WHERE id=?", (pid,))
 
     def update_pnl(self, trade_id, exit_price, pnl, reason=None):
         t = self._run("SELECT * FROM trades WHERE id=?", (trade_id,), "one")

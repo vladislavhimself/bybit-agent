@@ -30,6 +30,29 @@ def _ret_pct(df1h, ts_from, ts_to=None):
     return (p1 / p0 - 1) * 100 if p0 > 0 else None
 
 
+def move_since(event, df1h):
+    """Ход цены (%) с часа выхода новости до сейчас, или None."""
+    return _ret_pct(df1h, event["ts"], None)
+
+
+def typical_move_done(event, df1h, playbook):
+    """Множитель и причина: если цена уже прошла большую часть типичной реакции на такой тип события."""
+    if playbook is None:
+        return 1.0, None
+    prior = playbook.prior(event["event_type"], event["direction"])
+    if not prior or prior.get("n", 0) < 3:
+        return 1.0, None
+    typical = prior.get("mean_abs_24h") or 0
+    r = move_since(event, df1h)
+    if r is None or typical <= 0:
+        return 1.0, None
+    with_news = (r > 0) == (event["direction"] == "bullish")
+    if with_news and abs(r) >= 0.8 * typical:
+        return 0.4, (f"психология: цена уже прошла {abs(r):.1f}% при типичной реакции {typical:.1f}% "
+                     f"на такой тип события, остаток движения мал (x0.4)")
+    return 1.0, None
+
+
 def priced_in(event, df1h, cfg):
     """Множитель 0.3..1.15 и причина: насколько новость уже отыграна ростом/падением до неё."""
     hours = cfg.get("runup_hours", 48)

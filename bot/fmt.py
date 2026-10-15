@@ -69,7 +69,8 @@ def close_message(t, pnl, pnl_r, reason, tradable=None):
     return s
 
 
-def balance_message(equity, m, positions, stats, cap, llm=None, next_macro=None, xstream=None, halted_hint=True):
+def balance_message(equity, m, positions, stats, cap, llm=None, next_macro=None, xstream=None, halted_hint=True,
+                    pendings=None):
     lines = ["💼 БАЛАНС"]
     if cap:
         lines.append(f"Торговый капитал: {m['tradable']:.2f} USDT (лимит {cap:.0f}, прибыль с начала {m['tradable'] + m['reserve'] - cap:+.2f})")
@@ -79,6 +80,9 @@ def balance_message(equity, m, positions, stats, cap, llm=None, next_macro=None,
     lines.append(f"Сегодня {m['day_pct']:+.1f}% | неделя {m['week_pct']:+.1f}% | просадка от пика {m['drawdown_pct']:.1f}%")
     if m["halted"] and halted_hint:
         lines.append(f"⛔ Остановлен: {m['halt_reason']}. /resume чтобы продолжить")
+    if pendings:
+        lines.append("Ждут отката: " + ", ".join(f"{base_of(p['symbol'])} {'ЛОНГ' if p['side'] == 'Buy' else 'ШОРТ'} @ {p['price']:g}"
+                                               for p in pendings))
     if positions:
         lines.append("Позиции:")
         for p in positions:

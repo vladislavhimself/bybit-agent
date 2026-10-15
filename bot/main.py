@@ -181,7 +181,10 @@ class Bot:
         events = self.j.recent_events(72)
         params = self.s.get("signals")
         inst = self.ex.instruments()
-        open_trades = self.j.open_trades()
+        # отложенные ордера считаем как занятые слоты: по символу, направлению, новости и риску
+        open_trades = self.j.open_trades() + [
+            {"symbol": p["symbol"], "side": p["side"], "entry": p["price"], "stop_init": p["stop"], "qty": p["qty"],
+             "qty_init": p["qty"], "event_key": p.get("event_key", ""), "pending": True} for p in self.j.pendings()]
         candidates = []
         for sym in symbols:
             if sym not in inst:
@@ -203,7 +206,8 @@ class Bot:
         log.info("%s: %d символов, кандидатов %d", tag, len(symbols), len(candidates))
         opened = 0
         for sig, ta, tk in candidates:
-            can, why = self.risk.can_open(sig.symbol, open_trades, positions, equity, sig.direction, sig.event_key)
+            can, why = self.risk.can_open(sig.symbol, open_trades, positions, equity, sig.direction, sig.event_key,
+                                          sig.tier)
             if not can:
                 log.info("%s: %s", sig.symbol, why)
                 continue
@@ -237,7 +241,10 @@ class Bot:
             tid = self.exe.open(sig, ta, equity, positions)
             if tid:
                 opened += 1
-                open_trades = self.j.open_trades()
+                open_trades = self.j.open_trades() + [
+                    {"symbol": p["symbol"], "side": p["side"], "entry": p["price"], "stop_init": p["stop"],
+                     "qty": p["qty"], "qty_init": p["qty"], "event_key": p.get("event_key", ""), "pending": True}
+                    for p in self.j.pendings()]
                 positions = self.ex.positions()
                 equity, _ = self.ex.equity()
         return opened
@@ -292,7 +299,8 @@ class Bot:
             c = self.analyst.cost.today()
             llm = {"calls": c["calls"], "usd": c["usd"], "budget": self.analyst.budget}
         self.tg.send(fmt.balance_message(equity, m, positions, self.j.stats(), float(self.s.get("risk.capital_cap_usd") or 0),
-                                         llm, self.cal.next_high(), self.xstream.status() if self.xstream else None))
+                                         llm, self.cal.next_high(), self.xstream.status() if self.xstream else None,
+                                         pendings=self.j.pendings()))
 
     def handle_commands(self, equity, positions):
         for cmd in self.tg.pop_commands():
@@ -302,7 +310,9 @@ class Bot:
                 self.step_report(equity, positions)
             elif c == "/stop":
                 self.risk.halt("ручная остановка (/stop)")
-                self.tg.send("⛔ Новые входы остановлены. Открытые позиции остаются под стопами. /panic закроет всё.")
+                n = self.exe.cancel_pendings("ручная остановка")
+                self.tg.send(f"⛔ Новые входы остановлены, отложенных ордеров снято: {n}. "
+                             "Открытые позиции остаются под стопами. /panic закроет всё.")
             elif c == "/panic":
                 n = self.exe.close_all("ручное закрытие (/panic)")
                 self.risk.halt("ручная остановка (/panic)")
@@ -356,6 +366,7 @@ class Bot:
                 if now - self.last["manage"] >= iv["manage_sec"]:
                     self.last["manage"] = now
                     self.j.log_equity(equity)
+                    self.exe.check_pendings(equity)
                     closed = self.exe.manage()
                     self.closed_since_review += len(closed)
                     self.exe.reconcile()

@@ -117,10 +117,13 @@ def snapshot(df1h: pd.DataFrame, df4h: pd.DataFrame | None = None, df15: pd.Data
     if df4h is not None and len(df4h) >= 60:
         c4 = df4h["close"]
         trend_4h = _trend(float(c4.iloc[-1]), float(ema(c4, 20).iloc[-1]), float(ema(c4, 50).iloc[-1]))
-    timing_15m = 0
+    timing_15m, pull_15m = 0, 0.0
     if df15 is not None and len(df15) >= 50:
         c15 = df15["close"]
-        timing_15m = _trend(float(c15.iloc[-1]), float(ema(c15, 9).iloc[-1]), float(ema(c15, 21).iloc[-1]))
+        e21_15 = float(ema(c15, 21).iloc[-1])
+        timing_15m = _trend(float(c15.iloc[-1]), float(ema(c15, 9).iloc[-1]), e21_15)
+        # Насколько цена оторвалась от 15-минутной средней, в ATR(1ч): >0 выше средней, <0 ниже
+        pull_15m = (close - e21_15) / atr_v if atr_v > 0 else 0.0
 
     # MACD: знак гистограммы и её направление
     mh, mh_prev = float(m_hist.iloc[-1]), float(m_hist.iloc[-4])
@@ -188,7 +191,7 @@ def snapshot(df1h: pd.DataFrame, df4h: pd.DataFrame | None = None, df15: pd.Data
     return {
         "close": close, "atr": atr_v, "atr_pct": round(atr_pct, 3), "atr_rank": round(atr_rank, 2),
         "rsi": round(rsi_v, 1), "adx": round(adx_v, 1), "trend_1h": trend_1h, "trend_4h": trend_4h,
-        "timing_15m": timing_15m, "breakout": breakout, "vol_ratio": round(vol_ratio, 2),
+        "timing_15m": timing_15m, "pull_15m": round(pull_15m, 2), "breakout": breakout, "vol_ratio": round(vol_ratio, 2),
         "ret_24h": round(ret_24h, 2), "ret_4h": round(ret_4h, 2), "macd_hist": round(mh, 6),
         "macd_sign": macd_sign, "bb_pct_b": round(pb, 2), "bb_squeeze": bool(squeeze),
         "bb_release": bool(squeeze_release), "rsi_divergence": div, "res_dist_atr": round(res_dist, 2),
