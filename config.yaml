@@ -55,7 +55,7 @@ risk:
   # Лимит торгового капитала: бот считает своим только capital_cap_usd + прибыль/убыток с момента старта.
   # Прибыль автоматически увеличивает торговый капитал, резерв прибыли работает поверх. 0 = без лимита.
   capital_cap_usd: 300
-  max_open_positions: 4
+  max_open_positions: 5
   max_total_exposure_x: 3.0      # суммарный объём позиций не больше 3x от торгового капитала
   daily_loss_limit_pct: 6
   weekly_loss_limit_pct: 12
@@ -88,7 +88,7 @@ psychology:
   crowd_threshold: 0.5       # перекос толпы, с которого режем входы вместе с ней
 
 signals:
-  entry_threshold: 0.55
+  entry_threshold: 0.50
   conviction_threshold: 0.85
   news_weight: 1.0               # вклад новости (0..1) умножается на вес и складывается с остальными
   ta_weight: 0.6
