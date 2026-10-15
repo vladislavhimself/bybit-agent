@@ -56,6 +56,8 @@ risk:
   # Прибыль автоматически увеличивает торговый капитал, резерв прибыли работает поверх. 0 = без лимита.
   capital_cap_usd: 300
   max_open_positions: 5
+  max_same_direction: 3          # альты ходят вместе: не больше 3 позиций в одну сторону
+  max_trades_per_event: 2        # не больше 2 сделок на одну и ту же новость
   max_total_exposure_x: 3.0      # суммарный объём позиций не больше 3x от торгового капитала
   daily_loss_limit_pct: 6
   weekly_loss_limit_pct: 12
@@ -86,6 +88,8 @@ psychology:
   reaction_min_minutes: 30   # через сколько минут после новости оценивать реакцию цены
   reaction_strong_pct: 1.0   # заметная реакция (умножается на 1 + важность/10)
   crowd_threshold: 0.5       # перекос толпы, с которого режем входы вместе с ней
+  late_entry_hours: 2        # новость старше этого и уже отыграна на late_entry_pct = вход поздний, сила x0.4
+  late_entry_pct: 2.0
 
 signals:
   entry_threshold: 0.50

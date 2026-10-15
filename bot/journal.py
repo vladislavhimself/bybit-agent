@@ -48,6 +48,10 @@ class Journal:
                     self.db.execute(f"ALTER TABLE events ADD COLUMN {col} {typ}")
                 except sqlite3.OperationalError:
                     pass
+            try:
+                self.db.execute("ALTER TABLE trades ADD COLUMN event_key TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
             self.db.commit()
 
     def _run(self, sql, params=(), fetch=None):
@@ -96,12 +100,24 @@ class Journal:
     def open_trade(self, t: dict) -> int:
         return self._run(
             "INSERT INTO trades(symbol,side,qty,entry,stop,tp,stop_init,tier,score,confidence,reasons,regime,atr,"
-            "leverage,opened_ts,status,order_id,news_driven,qty_init,tp_plan,tp_hits) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,0)",
+            "leverage,opened_ts,status,order_id,news_driven,qty_init,tp_plan,tp_hits,event_key) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,0,?)",
             (t["symbol"], t["side"], t["qty"], t["entry"], t["stop"], t["tp"], t["stop"], t["tier"], t["score"],
              t["confidence"], json.dumps(t["reasons"], ensure_ascii=False), t["regime"], t["atr"], t["leverage"],
              int(time.time()), t.get("order_id", ""), int(t.get("news_driven", False)), t["qty"],
-             json.dumps(t.get("tp_plan", []))))
+             json.dumps(t.get("tp_plan", [])), t.get("event_key", "")))
+
+    def update_pnl(self, trade_id, exit_price, pnl, reason=None):
+        t = self._run("SELECT * FROM trades WHERE id=?", (trade_id,), "one")
+        risk = abs(t["entry"] - t["stop_init"]) * (t["qty_init"] or t["qty"])
+        pnl_r = pnl / risk if risk > 0 else 0.0
+        self._run("UPDATE trades SET exit=?, pnl=?, pnl_r=?, close_reason=COALESCE(?, close_reason) WHERE id=?",
+                  (exit_price, pnl, pnl_r, reason, trade_id))
+
+    def unreconciled(self, hours=48):
+        """Закрытые сделки, у которых результат не удалось получить с биржи."""
+        return self._run("SELECT * FROM trades WHERE status='closed' AND closed_ts>=? AND close_reason LIKE '%не получен%'",
+                         (int(time.time()) - hours * 3600,), "all")
 
     def open_trades(self):
         rows = self._run("SELECT * FROM trades WHERE status='open'", (), "all")

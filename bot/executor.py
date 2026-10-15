@@ -72,7 +72,7 @@ class Executor:
             "symbol": sig.symbol, "side": side, "qty": qty, "entry": entry, "stop": stop, "tp": final_tp,
             "tier": sig.tier, "score": sig.components["total"], "confidence": sig.strength,
             "reasons": sig.reasons, "regime": sig.regime, "atr": ta["atr"], "leverage": lev,
-            "order_id": order_id, "news_driven": sig.news_driven, "tp_plan": plan,
+            "order_id": order_id, "news_driven": sig.news_driven, "tp_plan": plan, "event_key": sig.event_key,
         })
         risk_pct = r["risk_per_trade_pct"][sig.tier]
         tradable = self.risk.tradable(equity)
@@ -181,17 +181,29 @@ class Executor:
             return
         self._finalize(t, reason)
 
+    def _exchange_result(self, t):
+        """(pnl, exit) по данным биржи за время жизни сделки, с повторами. None, если биржа не ответила."""
+        since = t["opened_ts"] * 1000 - 60000
+        for attempt in range(4):
+            try:
+                rows = [x for x in self.ex.closed_pnl(t["symbol"], start_ms=since) if x["ts"] >= since]
+                if rows:
+                    return sum(x["pnl"] for x in rows), rows[0]["exit"]
+                if attempt >= 1:
+                    return None   # биржа ответила, но записей нет (ещё не прошла запись о закрытии)
+            except Exception as e:  # noqa: BLE001
+                log.warning("%s: closed_pnl (попытка %d): %s", t["symbol"], attempt + 1, e)
+            time.sleep(2 + attempt * 2)
+        return None
+
     def _finalize(self, t, reason):
         self.ex.cancel_all(t["symbol"])
-        pnl, exit_price = 0.0, t["entry"]
-        try:
-            since = t["opened_ts"] * 1000 - 60000
-            rows = [x for x in self.ex.closed_pnl(t["symbol"], start_ms=since) if x["ts"] >= since]
-            if rows:
-                pnl = sum(x["pnl"] for x in rows)
-                exit_price = rows[0]["exit"]
-        except Exception as e:  # noqa: BLE001
-            log.warning("%s: closed_pnl: %s", t["symbol"], e)
+        res = self._exchange_result(t)
+        if res is None:
+            pnl, exit_price = 0.0, t["entry"]
+            reason = reason + " (результат не получен с биржи, уточню позже)"
+        else:
+            pnl, exit_price = res
         self.j.close_trade(t["id"], exit_price, pnl, reason)
         risk = abs(t["entry"] - t["stop_init"]) * (t.get("qty_init") or t["qty"])
         pnl_r = pnl / risk if risk > 0 else 0
@@ -200,6 +212,16 @@ class Executor:
         except Exception:  # noqa: BLE001
             tradable = None
         self.tg.send(fmt.close_message(t, pnl, pnl_r, reason, tradable))
+
+    def reconcile(self):
+        """Дозаполнить результат сделок, по которым биржа не ответила при закрытии."""
+        for t in self.j.unreconciled(48):
+            res = self._exchange_result(t)
+            if res is not None:
+                pnl, exit_price = res
+                self.j.update_pnl(t["id"], exit_price, pnl, t["close_reason"].split(" (результат")[0])
+                log.info("%s: результат уточнён: %+.2f USDT", t["symbol"], pnl)
+                self.tg.send(f"ℹ️ Уточнение по {fmt.base_of(t['symbol'])}: результат {pnl:+.2f} USDT")
 
     def close_all(self, reason):
         n = 0

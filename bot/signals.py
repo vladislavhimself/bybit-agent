@@ -17,6 +17,7 @@ class Signal:
     regime: str = ""
     news_driven: bool = False
     events: list = field(default_factory=list)
+    event_key: str = ""       # новость, на которой построен сигнал (для лимита сделок на одно событие)
 
 
 def news_score(base, events, min_importance, now=None, playbook=None, df1h=None, psych_cfg=None):
@@ -123,6 +124,9 @@ def build_signal(symbol, base, ta, ticker, oi_hist, events, params, now=None, pl
     # Во флэте торгуем только от сильных новостей
     if ta["regime"] == "range" and abs(ns) < 0.3:
         return None
+    # В экстремальной волатильности стоп 1.5-2 ATR выбивает шумом: без весомой новости не входим
+    if ta["regime"] == "high_vol" and abs(ns) < 0.3:
+        return None
     # Не торгуем против тренда 4ч без весомой новости
     if ta["trend_4h"] != 0 and (ta["trend_4h"] > 0) != (sign > 0) and abs(ns) < 0.5:
         return None
@@ -149,6 +153,10 @@ def build_signal(symbol, base, ta, ticker, oi_hist, events, params, now=None, pl
         tier = "medium"  # чистый теханализ без новостного подтверждения не получает повышенный размер
         reasons.append("без новостного подтверждения: размер не выше medium")
 
+    key = ""
+    if used and abs(ns) >= 0.3:
+        top = max(used, key=lambda e: e["importance"] * e["confidence"])
+        key = top.get("news_id") or top.get("title", "")[:40]
     return Signal(symbol=symbol, direction="long" if sign > 0 else "short", strength=round(strength, 3),
                   tier=tier, components=comps, reasons=reasons, regime=ta["regime"],
-                  news_driven=abs(ns) >= 0.3, events=used)
+                  news_driven=abs(ns) >= 0.3, events=used, event_key=key)

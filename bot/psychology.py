@@ -60,6 +60,11 @@ def reaction(event, df1h, cfg, now=None):
     strong = cfg.get("reaction_strong_pct", 1.0) * (1 + event["importance"] / 10)
     went_with = (r > 0) == expected_up
     if went_with and abs(r) >= strong:
+        late_h = cfg.get("late_entry_hours", 2)
+        late_pct = cfg.get("late_entry_pct", 2.0)
+        if age_min >= late_h * 60 and abs(r) >= late_pct:
+            # движение уже состоялось: входить сейчас = догонять поезд
+            return 0.4, f"психология: новость старше {late_h}ч и уже отыграна ({r:+.1f}%), вход поздний (x0.4)"
         return 1.1, f"психология: цена подтвердила новость ({r:+.1f}% после выхода)"
     if not went_with and abs(r) >= strong:
         # «хорошая новость, плохая реакция»: сила толпы иссякла, разворачиваем

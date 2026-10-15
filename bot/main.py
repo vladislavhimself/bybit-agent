@@ -75,6 +75,7 @@ class Bot:
         self.closed_since_review = 0
         self.err_count, self.last_err_sent = 0, 0.0
         self.cache = {}   # symbol -> (ts, ta, ticker, oi, df1h)
+        self.kcache = {}  # (symbol, interval) -> (ts, df) для старших таймфреймов
 
     # ---------- поток новостей ----------
     def _on_stream_items(self, items):
@@ -144,14 +145,25 @@ class Bot:
                              f"{fmt.clean(it['title'], 160)}\n{ev['reasoning']}")
 
     # ---------- данные ----------
+    def _klines_cached(self, symbol, interval, limit, max_age):
+        """Старшие таймфреймы меняются медленно: кешируем их дольше, чтобы не упираться в лимит запросов Bybit."""
+        key = (symbol, interval)
+        c = self.kcache.get(key)
+        if c and time.time() - c[0] < max_age:
+            return c[1]
+        df = self.ex.klines(symbol, interval, limit)
+        self.kcache[key] = (time.time(), df)
+        return df
+
     def market_data(self, symbol, max_age=240):
         c = self.cache.get(symbol)
         if c and time.time() - c[0] < max_age:
             return c[1], c[2], c[3]
         df1h = self.ex.klines(symbol, "60", 300)
-        df4h = self.ex.klines(symbol, "240", 120)
+        df4h = self._klines_cached(symbol, "240", 120, 900)
         df15 = self.ex.klines(symbol, "15", 100)
-        dfd = self.ex.klines(symbol, "D", 250)
+        dfd = self._klines_cached(symbol, "D", 250, 3600)
+        time.sleep(0.15)   # бережём лимит запросов Bybit при скане 40 пар
         ta = snapshot(df1h, df4h, df15, dfd)
         tk = self.ex.ticker(symbol)
         tk["long_ratio"] = self.ex.long_short_ratio(symbol)
@@ -191,7 +203,7 @@ class Bot:
         log.info("%s: %d символов, кандидатов %d", tag, len(symbols), len(candidates))
         opened = 0
         for sig, ta, tk in candidates:
-            can, why = self.risk.can_open(sig.symbol, open_trades, positions, equity)
+            can, why = self.risk.can_open(sig.symbol, open_trades, positions, equity, sig.direction, sig.event_key)
             if not can:
                 log.info("%s: %s", sig.symbol, why)
                 continue
@@ -346,6 +358,7 @@ class Bot:
                     self.j.log_equity(equity)
                     closed = self.exe.manage()
                     self.closed_since_review += len(closed)
+                    self.exe.reconcile()
                 if now - self.last["scan"] >= iv["scan_sec"]:
                     self.last["scan"] = now
                     self.step_scan(equity, self.ex.positions())

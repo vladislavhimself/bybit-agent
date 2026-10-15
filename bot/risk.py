@@ -135,13 +135,23 @@ class RiskManager:
                 "halted": self.halted, "halt_reason": self.halt_reason}
 
     # ---------- проверки перед входом ----------
-    def can_open(self, symbol, open_trades, positions, equity):
+    def can_open(self, symbol, open_trades, positions, equity, direction=None, event_key=""):
         r = self.s.get("risk")
         t = self.tradable(equity)
         if any(x["symbol"] == symbol for x in open_trades) or any(p["symbol"] == symbol for p in positions):
             return False, "уже есть позиция по символу"
         if len(open_trades) >= r["max_open_positions"]:
             return False, f"достигнут лимит позиций {r['max_open_positions']}"
+        # Альткоины ходят вместе: много позиций в одну сторону = одна большая ставка на рынок
+        if direction:
+            side = "Buy" if direction == "long" else "Sell"
+            same = sum(1 for x in open_trades if x["side"] == side)
+            if same >= r.get("max_same_direction", 3):
+                return False, f"уже {same} позиции в ту же сторону (лимит {r.get('max_same_direction', 3)})"
+        if event_key:
+            n_ev = sum(1 for x in open_trades if (x.get("event_key") or "") == event_key)
+            if n_ev >= r.get("max_trades_per_event", 2):
+                return False, f"по этой новости уже {n_ev} сделки (лимит {r.get('max_trades_per_event', 2)})"
         exposure = sum(p["qty"] * p["mark"] for p in positions)
         if t > 0 and exposure / t >= r["max_total_exposure_x"]:
             return False, f"суммарная экспозиция {exposure / t:.1f}x >= лимита"

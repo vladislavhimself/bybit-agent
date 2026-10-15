@@ -177,8 +177,8 @@ class Analyst:
             r = self._parse(self.cheap, "Ты фильтр новостей для торгового бота. Отвечай строго по схеме.", user,
                             Prefilter, 200)
             return bool(r and r.market_relevant)
-        except anthropic.APIError as e:
-            log.warning("prefilter: %s", e)
+        except Exception as e:  # noqa: BLE001  (ошибки API и разбора ответа: пропускаем к основной модели)
+            log.warning("prefilter: %s", str(e)[:200])
             return True
 
     def classify(self, title, summary, source, lessons_text=""):
