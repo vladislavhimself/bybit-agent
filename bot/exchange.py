@@ -138,10 +138,26 @@ class Exchange:
         return r["result"]["list"]
 
     # ---------- аккаунт ----------
-    def equity(self):
+    def balances(self):
+        """Баланс в USDT: equity (кошелёк + нереализованный результат), кошелёк (реализованное), нереализованное,
+        доступно, и весь счёт в USD. Считаем только USDT, чтобы переоценка других монет на счёте не выглядела
+        прибылью или убытком бота."""
         r = self.trade.get_wallet_balance(accountType="UNIFIED")
         acc = r["result"]["list"][0]
-        return float(acc["totalEquity"]), float(acc.get("totalAvailableBalance") or 0)
+        total = float(acc.get("totalEquity") or 0)
+        usdt = next((c for c in acc.get("coin", []) if c.get("coin") == "USDT"), None)
+        if usdt is None:
+            return {"equity": total, "wallet": total, "unrealised": 0.0,
+                    "available": float(acc.get("totalAvailableBalance") or 0), "total_equity": total}
+        wallet = float(usdt.get("walletBalance") or 0)
+        upnl = float(usdt.get("unrealisedPnl") or 0)
+        eq = float(usdt.get("equity") or (wallet + upnl))
+        avail = usdt.get("availableToWithdraw") or acc.get("totalAvailableBalance") or 0
+        return {"equity": eq, "wallet": wallet, "unrealised": upnl, "available": float(avail), "total_equity": total}
+
+    def equity(self):
+        b = self.balances()
+        return b["equity"], b["available"]
 
     def positions(self):
         r = self.trade.get_positions(category="linear", settleCoin="USDT")
@@ -205,8 +221,13 @@ class Exchange:
         return None
 
     def set_stop_loss(self, symbol, sl):
-        self.trade.set_trading_stop(category="linear", symbol=symbol, positionIdx=0,
-                                    stopLoss=self.fmt_price(symbol, sl), slTriggerBy="MarkPrice")
+        try:
+            self.trade.set_trading_stop(category="linear", symbol=symbol, positionIdx=0,
+                                        stopLoss=self.fmt_price(symbol, sl), slTriggerBy="MarkPrice")
+        except InvalidRequestError as e:
+            if "34040" in str(e) or "not modified" in str(e).lower():
+                return  # стоп уже стоит на этом уровне
+            raise
 
     def closed_pnl(self, symbol=None, start_ms=None, limit=50):
         params = dict(category="linear", limit=limit)

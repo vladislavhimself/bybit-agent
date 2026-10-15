@@ -75,7 +75,7 @@ def balance_message(equity, m, positions, stats, cap, llm=None, next_macro=None,
         lines.append(f"Торговый капитал: {m['tradable']:.2f} USDT (лимит {cap:.0f}, прибыль с начала {m['tradable'] + m['reserve'] - cap:+.2f})")
     else:
         lines.append(f"Торговый капитал: {m['tradable']:.2f} USDT")
-    lines.append(f"Резерв прибыли: {m['reserve']:.2f} USDT | весь счёт: {equity:.0f} USDT")
+    lines.append(f"Резерв прибыли: {m['reserve']:.2f} USDT | USDT на счёте: {equity:.0f}")
     lines.append(f"Сегодня {m['day_pct']:+.1f}% | неделя {m['week_pct']:+.1f}% | просадка от пика {m['drawdown_pct']:.1f}%")
     if m["halted"] and halted_hint:
         lines.append(f"⛔ Остановлен: {m['halt_reason']}. /resume чтобы продолжить")

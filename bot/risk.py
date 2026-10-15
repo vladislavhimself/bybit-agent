@@ -58,8 +58,10 @@ class RiskManager:
         self.day_start = self.week_start = t
         self._save()
 
-    def check(self, equity: float):
-        """Обновить состояние по текущему equity. Возвращает (можно_открывать_новые, причина/статус)."""
+    def check(self, equity: float, realized: float | None = None):
+        """Обновить состояние по текущему equity (с нереализованным результатом). realized = кошелёк без
+        открытых позиций: только по нему фиксируем прибыль в резерв, чтобы колебания открытой позиции
+        не превращались в «прибыль». Возвращает (можно_открывать_новые, причина/статус)."""
         now = datetime.now(timezone.utc)
         dk, wk = now.strftime("%Y-%m-%d"), now.strftime("%G-W%V")
         r = self.s.get("risk")
@@ -81,15 +83,16 @@ class RiskManager:
         if self.week_key != wk:
             self.week_key, self.week_start = wk, t
 
-        # фиксация прибыли в резерв
+        # фиксация прибыли в резерв: только по реализованному результату (кошелёк), не по открытым позициям
         locked_now = 0.0
         step = r.get("profit_lock_step_pct", 0)
-        if step and self.base > 0 and t >= self.base * (1 + step / 100):
-            gain = t - self.base
+        t_real = self.tradable(realized) if realized is not None else t
+        if step and self.base > 0 and t_real >= self.base * (1 + step / 100):
+            gain = t_real - self.base
             locked_now = gain * r.get("profit_lock_pct", 0) / 100
             self.reserve += locked_now
             t = self.tradable(equity)
-            self.base = t
+            self.base = self.tradable(realized) if realized is not None else t
             # сдвигаем точки отсчёта, чтобы перенос в резерв не выглядел убытком
             self.peak = max(self.peak - locked_now, t)
             self.day_start -= locked_now

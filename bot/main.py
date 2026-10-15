@@ -73,7 +73,8 @@ class Bot:
                                            self.s.get("sources.twitter_accounts") or [])
         self.last = {"scan": 0, "manage": 0, "report": 0, "review": 0}
         self.closed_since_review = 0
-        self.cache = {}   # symbol -> (ts, ta, ticker, oi)
+        self.err_count, self.last_err_sent = 0, 0.0
+        self.cache = {}   # symbol -> (ts, ta, ticker, oi, df1h)
 
     # ---------- поток новостей ----------
     def _on_stream_items(self, items):
@@ -317,8 +318,9 @@ class Bot:
     def run(self):
         iv = self.s.get("intervals")
         self.cal.refresh(force=True)
-        equity, _ = self.ex.equity()
-        self.risk.check(equity)
+        bal = self.ex.balances()
+        equity = bal["equity"]
+        self.risk.check(equity, realized=bal["wallet"])
         threading.Thread(target=self.news_loop, daemon=True, name="news").start()
         x_on = self.xstream.start() if self.xstream else False
         m = self.risk.metrics(equity)
@@ -332,8 +334,10 @@ class Bot:
             try:
                 self.cal.refresh()
                 self.mood.refresh()
-                equity, _ = self.ex.equity()
+                bal = self.ex.balances()
+                equity = bal["equity"]
                 positions = self.ex.positions()
+                self.risk.check(equity, realized=bal["wallet"])
                 self.handle_commands(equity, positions)
                 self.handle_events(equity, positions)
 
@@ -362,7 +366,14 @@ class Bot:
                 raise
             except Exception as e:  # noqa: BLE001
                 log.error("Ошибка цикла: %s\n%s", e, traceback.format_exc())
-                self.tg.send(f"⚠️ Ошибка цикла: {e}")
+                self.err_count += 1
+                # в Telegram не чаще раза в 30 минут, со счётчиком, чтобы не засыпать сообщениями
+                if time.time() - self.last_err_sent >= 1800:
+                    self.last_err_sent = time.time()
+                    short = str(e).split("\n")[0][:160]
+                    self.tg.send(f"⚠️ Ошибка в работе бота ({self.err_count} за последнее время): {short}\n"
+                                 f"Бот продолжает работать, позиции под стопами на бирже.")
+                    self.err_count = 0
                 time.sleep(30)
             time.sleep(3)
 
