@@ -44,11 +44,14 @@ class Reviewer:
         return "\n".join(f"- {r['text']}" for r in rows)
 
     def run(self, apply: bool):
-        trades = self.j.closed_trades(40)
+        # Разбираем только сделки, закрытые после прошлого разбора: одни и те же убытки нельзя наказывать дважды
+        last_ts = self.j.kv_get("last_review_ts", 0)
+        trades = [t for t in self.j.closed_trades(40) if t["closed_ts"] > last_ts]
         if len(trades) < 5:
-            log.info("Разбор: мало закрытых сделок (%d), пропуск", len(trades))
+            log.info("Разбор: новых закрытых сделок %d (нужно 5), пропуск", len(trades))
             return None
         stats = self.j.stats()
+        prev = [t for t in self.j.closed_trades(40) if t["closed_ts"] <= last_ts][:15]
         current = {k: self.s.get(k) for k in TUNABLE_BOUNDS}
         bounds = {k: list(v) for k, v in TUNABLE_BOUNDS.items()}
         compact = [{
@@ -57,11 +60,19 @@ class Reviewer:
             "hours": round((t["closed_ts"] - t["opened_ts"]) / 3600, 1), "close_reason": t["close_reason"],
             "reasons": t["reasons"][:4],
         } for t in trades]
-        user = (f"Статистика: {json.dumps(stats, ensure_ascii=False)}\n"
+        prev_compact = [{"symbol": t["symbol"], "side": t["side"], "tier": t["tier"], "pnl_r": round(t["pnl_r"], 2),
+                         "close_reason": (t["close_reason"] or "")[:40]} for t in prev]
+        user = (f"Общая статистика за всё время: {json.dumps(stats, ensure_ascii=False)}\n"
                 f"Текущие параметры: {json.dumps(current, ensure_ascii=False)}\n"
                 f"Границы: {json.dumps(bounds, ensure_ascii=False)}\n"
-                f"Прошлые уроки:\n{self.lessons_text()}\n\n"
-                f"Сделки (новые первыми):\n{json.dumps(compact, ensure_ascii=False, indent=1)}")
+                f"Прошлые уроки (по ним уже внесены правки в код и параметры, не повторяй их):\n{self.lessons_text()}\n\n"
+                f"НОВЫЕ сделки с прошлого разбора, именно их разбираем ({len(compact)}):\n"
+                f"{json.dumps(compact, ensure_ascii=False, indent=1)}\n\n"
+                f"Старые сделки только для контекста, по ним выводы уже сделаны:\n"
+                f"{json.dumps(prev_compact, ensure_ascii=False)}\n\n"
+                f"Важно: если новых сделок мало или они не образуют закономерность, param_changes оставь пустым. "
+                f"Повышение entry_threshold допустимо только если новые сделки показывают, что слабые сигналы "
+                f"проигрывают, а сильные нет; иначе бот перестанет торговать и учиться.")
         try:
             resp = self.client.messages.parse(model=self.model, max_tokens=4000, system=SYSTEM,
                                               messages=[{"role": "user", "content": user}], output_format=Review)
@@ -83,6 +94,7 @@ class Reviewer:
             else:
                 lines.append(f"предложение: {ch.name} -> {ch.new_value} — {ch.reason}")
         self.j.add_review(rv.summary, [c.model_dump() for c in rv.param_changes], apply)
+        self.j.kv_set("last_review_ts", max(t["closed_ts"] for t in trades))
         if not apply and rv.param_changes:
             self.j.kv_set("pending_changes", [c.model_dump() for c in rv.param_changes])
         text = ("🧠 Разбор сделок\n" + rv.summary + "\n\nУроки:\n" + "\n".join("• " + l for l in rv.lessons)

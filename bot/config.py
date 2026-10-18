@@ -17,12 +17,12 @@ load_dotenv(ROOT / ".env")
 # Параметры, которые бот имеет право менять сам в ходе самообучения, и их границы.
 # Всё, чего здесь нет, меняется только человеком.
 TUNABLE_BOUNDS = {
-    "signals.entry_threshold": (0.40, 0.85),
+    "signals.entry_threshold": (0.40, 0.72),   # выше 0.72 бот перестаёт торговать вообще
     "signals.conviction_threshold": (0.70, 0.95),
-    "signals.news_weight": (0.50, 1.50),
+    "signals.news_weight": (0.60, 1.50),
     "signals.ta_weight": (0.20, 1.00),
-    "signals.positioning_weight": (0.00, 0.80),
-    "signals.min_news_importance": (3, 8),
+    "signals.positioning_weight": (0.10, 0.80),
+    "signals.min_news_importance": (3, 7),
     "risk.stop_atr_mult": (1.0, 3.0),
     "risk.trail_after_r": (0.5, 2.0),
     "risk.max_hours_in_trade": (6, 96),
@@ -81,10 +81,14 @@ class Settings:
             value = float(value)
         except (TypeError, ValueError):
             return False, f"{path}: значение {value!r} не число"
+        old = self.get(path)
+        # один разбор не может сдвинуть параметр больше чем на 20% от текущего значения
+        if old not in (None, 0):
+            lim = abs(float(old)) * 0.2
+            value = max(float(old) - lim, min(float(old) + lim, value))
         clamped = max(lo, min(hi, value))
         if isinstance(lo, int) and isinstance(hi, int):
             clamped = int(round(clamped))
-        old = self.get(path)
         self.learned[path] = clamped
         self.learned_path.write_text(json.dumps(self.learned, indent=2, ensure_ascii=False), encoding="utf-8")
         self.cfg = self._merged()
