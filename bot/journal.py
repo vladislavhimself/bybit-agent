@@ -52,10 +52,11 @@ class Journal:
                     self.db.execute(f"ALTER TABLE events ADD COLUMN {col} {typ}")
                 except sqlite3.OperationalError:
                     pass
-            try:
-                self.db.execute("ALTER TABLE trades ADD COLUMN event_key TEXT DEFAULT ''")
-            except sqlite3.OperationalError:
-                pass
+            for col, typ in (("event_key", "TEXT DEFAULT ''"), ("mfe_r", "REAL DEFAULT 0"), ("mfe_ts", "INTEGER DEFAULT 0")):
+                try:
+                    self.db.execute(f"ALTER TABLE trades ADD COLUMN {col} {typ}")
+                except sqlite3.OperationalError:
+                    pass
             self.db.commit()
 
     def _run(self, sql, params=(), fetch=None):
@@ -149,6 +150,9 @@ class Journal:
 
     def update_stop(self, trade_id, stop):
         self._run("UPDATE trades SET stop=? WHERE id=?", (stop, trade_id))
+
+    def update_mfe(self, trade_id, mfe_r):
+        self._run("UPDATE trades SET mfe_r=?, mfe_ts=? WHERE id=?", (mfe_r, int(time.time()), trade_id))
 
     def update_partial(self, trade_id, qty, tp_hits):
         self._run("UPDATE trades SET qty=?, tp_hits=? WHERE id=?", (qty, tp_hits, trade_id))

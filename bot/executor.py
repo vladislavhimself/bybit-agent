@@ -224,17 +224,44 @@ class Executor:
                         self._move_stop(t, be, "безубыток после первого тейка")
                 t["qty"], t["tp_hits"] = pos["qty"], new_hits
 
+            # пик прибыли (MFE) и когда он обновлялся
+            mfe = t.get("mfe_r") or 0.0
+            mfe_ts = t.get("mfe_ts") or t["opened_ts"]
+            if r_now > mfe + 0.05:
+                mfe, mfe_ts = r_now, int(time.time())
+                self.j.update_mfe(t["id"], mfe)
+
             # тайм-стоп: сделка не идёт
             if hours >= r["max_hours_in_trade"] and r_now < 0.5:
                 self._close_now(t, f"тайм-стоп {hours:.0f}ч, R={r_now:.2f}")
                 closed.append(t)
                 continue
 
-            # трейлинг остатка ступенями по R
+            # защита прибыли: от пика откатились больше чем на giveback_r
+            if mfe >= r.get("giveback_min_peak_r", 0.8) and r_now <= mfe - r.get("giveback_r", 0.6):
+                self._close_now(t, f"защита прибыли: пик был {mfe:.2f}R, сейчас {r_now:.2f}R")
+                closed.append(t)
+                continue
+
+            # сделка застряла: в плюсе, но пик не обновлялся stall_hours
+            stall = r.get("stall_hours", 12)
+            if 0.1 <= r_now < 1.0 and (time.time() - mfe_ts) / 3600 >= stall and hours >= stall:
+                self._close_now(t, f"сделка застряла: {r_now:.2f}R без прогресса {stall}ч")
+                closed.append(t)
+                continue
+
+            # безубыток, как только прибыль достигла breakeven_r
+            if r_now >= r.get("breakeven_r", 0.7):
+                be = t["entry"] * (1 + 0.0015 * (1 if long else -1))
+                self._move_stop(t, be, f"безубыток при {r_now:.2f}R")
+
+            # трейлинг остатка: ступенями по R и не дальше giveback_r от пика
             if r_now >= r["trail_after_r"]:
                 step = int(r_now)
-                new_stop = t["entry"] + (step - 1 + 0.2) * risk_dist * (1 if long else -1)
-                self._move_stop(t, new_stop, f"трейлинг R={r_now:.2f}")
+                ladder = t["entry"] + (step - 1 + 0.2) * risk_dist * (1 if long else -1)
+                from_peak = t["entry"] + (mfe - r.get("giveback_r", 0.6)) * risk_dist * (1 if long else -1)
+                new_stop = max(ladder, from_peak) if long else min(ladder, from_peak)
+                self._move_stop(t, new_stop, f"трейлинг R={r_now:.2f}, пик {mfe:.2f}R")
         return closed
 
     def _move_stop(self, t, new_stop, why):

@@ -174,6 +174,8 @@ class RiskManager:
         if t <= 0:
             return None, "торговый капитал исчерпан, резерв не трогаем"
         risk_amt = t * r["risk_per_trade_pct"][tier] / 100
+        if datetime.now(timezone.utc).weekday() >= 5:
+            risk_amt *= r.get("weekend_risk_mult", 1.0)
         dist = abs(price - stop)
         if dist <= 0 or price <= 0:
             return None, "нулевое расстояние до стопа"

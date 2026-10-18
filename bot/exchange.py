@@ -54,6 +54,7 @@ class Exchange:
                 lot, pf, lf = it["lotSizeFilter"], it["priceFilter"], it["leverageFilter"]
                 out[it["symbol"]] = {
                     "base": it["baseCoin"],
+                    "launch_ts": int(it.get("launchTime") or 0) / 1000,
                     "qty_step": Decimal(lot["qtyStep"]),
                     "min_qty": Decimal(lot["minOrderQty"]),
                     "tick": Decimal(pf["tickSize"]),
@@ -71,9 +72,12 @@ class Exchange:
         inst = self.instruments()
         r = self.market.get_tickers(category="linear")
         rows = []
+        min_age = cfg.get("min_listing_days", 0) * 86400
         for t in r["result"]["list"]:
             sym = t["symbol"]
             if sym not in inst or sym in (cfg.get("blacklist") or []):
+                continue
+            if min_age and inst[sym]["launch_ts"] and time.time() - inst[sym]["launch_ts"] < min_age:
                 continue
             turnover = float(t.get("turnover24h") or 0)
             if turnover >= cfg["min_turnover_24h_usd"]:

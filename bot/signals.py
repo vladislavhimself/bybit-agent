@@ -114,6 +114,11 @@ def build_signal(symbol, base, ta, ticker, oi_hist, events, params, now=None, pl
     agreement = (sum(1 for v in nonzero if (v > 0) == (sign > 0)) / len(nonzero)) if nonzero else 0.0
     strength = abs(total) * (0.7 + 0.3 * agreement)
     strength *= psychology.crowd_adjust(sign, crowd_s, psych_cfg or {})
+    # Против дневного тренда ходить дороже: по 15 годам BTC на дневках работает импульс, а не разворот
+    td = ta.get("trend_d", 0)
+    if (sign < 0 and td > 0) or (sign > 0 and td < 0):
+        strength *= 0.85
+        reasons.append("против дневного тренда: сила x0.85")
     if ta.get("timing_15m", 0) != 0 and (ta["timing_15m"] > 0) != (sign > 0):
         strength *= 0.85  # 15-минутный импульс против нас: ждём лучшей точки
 
