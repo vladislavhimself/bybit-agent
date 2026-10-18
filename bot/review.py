@@ -74,7 +74,7 @@ class Reviewer:
                 f"Повышение entry_threshold допустимо только если новые сделки показывают, что слабые сигналы "
                 f"проигрывают, а сильные нет; иначе бот перестанет торговать и учиться.")
         try:
-            resp = self.client.messages.parse(model=self.model, max_tokens=4000, system=SYSTEM,
+            resp = self.client.messages.parse(model=self.model, max_tokens=16000, output_config={"effort": "high"}, system=SYSTEM,
                                               messages=[{"role": "user", "content": user}], output_format=Review)
         except anthropic.APIError as e:
             log.error("review: %s", e)

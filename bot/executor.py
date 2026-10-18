@@ -85,7 +85,8 @@ class Executor:
             return self._finish_entry(sig, ta["atr"], dist, lev, order_id, equity, price, qty)
 
         # --- вход на откате: лимитный ордер ниже/выше рынка ---
-        k = e.get("pullback_atr", 0.4)
+        # по свежей новости рынок часто уходит без отката: ждём неглубокий откат
+        k = e.get("pullback_atr_news", 0.15) if sig.news_driven else e.get("pullback_atr", 0.25)
         limit = price - k * ta["atr"] if long else price + k * ta["atr"]
         stop = limit - dist if long else limit + dist
         qty, lev = self.risk.size(sig.symbol, equity, limit, stop, sig.tier, positions)

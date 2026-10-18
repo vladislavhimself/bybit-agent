@@ -136,9 +136,11 @@ class Analyst:
     def over_budget(self):
         return bool(self.budget) and self.cost.today()["usd"] >= self.budget
 
-    def _parse(self, model, system, user, schema, max_tokens=1500):
+    def _parse(self, model, system, user, schema, max_tokens=8000, effort="medium"):
+        # Модель сначала думает, потом отвечает: на мышление уходят токены из того же лимита,
+        # поэтому лимит с запасом, а глубину мышления задаёт effort.
         resp = self.client.messages.parse(
-            model=model, max_tokens=max_tokens,
+            model=model, max_tokens=max_tokens, output_config={"effort": effort},
             system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": user}], output_format=schema,
         )
@@ -175,7 +177,7 @@ class Analyst:
                 "рекламные акции = false.")
         try:
             r = self._parse(self.cheap, "Ты фильтр новостей для торгового бота. Отвечай строго по схеме.", user,
-                            Prefilter, 200)
+                            Prefilter, 2000, "low")
             return bool(r and r.market_relevant)
         except Exception as e:  # noqa: BLE001  (ошибки API и разбора ответа: пропускаем к основной модели)
             log.warning("prefilter: %s", str(e)[:200])
@@ -191,7 +193,7 @@ class Analyst:
         cheap_src = set(self.s.get("llm.cheap_sources") or [])
         model = self.cheap if source in cheap_src else self._main_model()
         try:
-            ev = self._parse(model, SYSTEM_NEWS, user, NewsEvent)
+            ev = self._parse(model, SYSTEM_NEWS, user, NewsEvent, 8000, "medium")
         except anthropic.RateLimitError as e:
             log.warning("classify rate limit: %s", e)
             time.sleep(5)
@@ -239,7 +241,7 @@ class Analyst:
         if lessons_text:
             user += f"\n\nУроки из прошлых сделок:\n{lessons_text}"
         try:
-            v = self._parse(self.model, SYSTEM_SETUP, user, SetupVerdict)
+            v = self._parse(self.model, SYSTEM_SETUP, user, SetupVerdict, 12000, "high")
         except anthropic.APIError as e:
             log.error("judge_setup: %s", e)
             return None
