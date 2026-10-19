@@ -141,6 +141,14 @@ def build_signal(symbol, base, ta, ticker, oi_hist, events, params, now=None, pl
     if abs(ns) < 0.3 and abs(ta["ret_24h"]) > 15 and (ta["ret_24h"] > 0) == (sign > 0):
         return None
 
+    # Растяжение: цена уже прошла >= max_extension_atr ATR(1ч) за 24ч в нашу сторону = вход в конце движения.
+    # На 400 днях истории по 26 парам такие входы убыточны, а на живом счёте 12 из 13 таких сделок закрылись
+    # в минус (research/live_rules). Исключение: очень свежая важная новость, движение только начинается.
+    ext = sign * ta["ret_24h"] / ta["atr_pct"] if ta.get("atr_pct") else 0.0
+    fresh = any(e.get("age_h", 99) * 60 <= p.get("fresh_news_minutes", 20) and e["importance"] >= 7 for e in used)
+    if ext >= p.get("max_extension_atr", 2.0) and not fresh:
+        return None
+
     t = p["entry_threshold"]
     if strength < t:
         return None
@@ -155,9 +163,10 @@ def build_signal(symbol, base, ta, ticker, oi_hist, events, params, now=None, pl
     if ta["regime"] == "high_vol":
         tier = {"conviction": "high", "high": "medium", "medium": "low", "low": "low"}[tier]
         reasons.append("экстремальная волатильность: размер понижен")
-    if abs(ns) < 0.05 and tier in ("high", "conviction"):
-        tier = "medium"  # чистый теханализ без новостного подтверждения не получает повышенный размер
-        reasons.append("без новостного подтверждения: размер не выше medium")
+    if abs(ns) < 0.05 and tier != "low":
+        # чистый теханализ на истории около нуля по ожиданию: только малый размер
+        tier = "low"
+        reasons.append("без новостного подтверждения: только малый размер")
 
     key = ""
     if used and abs(ns) >= 0.3:

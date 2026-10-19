@@ -123,7 +123,7 @@ def snapshot(df1h: pd.DataFrame, df4h: pd.DataFrame | None = None, df15: pd.Data
         e21_15 = float(ema(c15, 21).iloc[-1])
         timing_15m = _trend(float(c15.iloc[-1]), float(ema(c15, 9).iloc[-1]), e21_15)
         # Насколько цена оторвалась от 15-минутной средней, в ATR(1ч): >0 выше средней, <0 ниже
-        pull_15m = (close - e21_15) / atr_v if atr_v > 0 else 0.0
+        pull_15m = (float(c15.iloc[-1]) - e21_15) / atr_v if atr_v > 0 else 0.0
 
     # MACD: знак гистограммы и её направление
     mh, mh_prev = float(m_hist.iloc[-1]), float(m_hist.iloc[-4])

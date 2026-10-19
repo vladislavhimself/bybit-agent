@@ -151,6 +151,10 @@ class Journal:
     def update_stop(self, trade_id, stop):
         self._run("UPDATE trades SET stop=? WHERE id=?", (stop, trade_id))
 
+    def last_entry_ts(self, symbol, side):
+        r = self._run("SELECT MAX(opened_ts) AS m FROM trades WHERE symbol=? AND side=?", (symbol, side), "one")
+        return (r or {}).get("m") or 0
+
     def update_mfe(self, trade_id, mfe_r):
         self._run("UPDATE trades SET mfe_r=?, mfe_ts=? WHERE id=?", (mfe_r, int(time.time()), trade_id))
 

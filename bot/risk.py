@@ -6,6 +6,7 @@
 profit_lock_pct прироста переносится в резерв. Резерв в сделках не участвует никогда."""
 import logging
 import math
+import time
 from datetime import datetime, timezone
 
 log = logging.getLogger("risk")
@@ -141,6 +142,11 @@ class RiskManager:
         t = self.tradable(equity)
         if any(x["symbol"] == symbol for x in open_trades) or any(p["symbol"] == symbol for p in positions):
             return False, "уже есть позиция или ордер по символу"
+        cd = r.get("symbol_cooldown_hours", 0)
+        if cd and direction:
+            last = self.j.last_entry_ts(symbol, "Buy" if direction == "long" else "Sell")
+            if last and time.time() - last < cd * 3600:
+                return False, f"по монете был вход в эту сторону меньше {cd} ч назад"
         if len(open_trades) >= r["max_open_positions"]:
             return False, f"достигнут лимит позиций {r['max_open_positions']}"
         # Альткоины ходят вместе: много позиций в одну сторону = одна большая ставка на рынок

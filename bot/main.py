@@ -164,8 +164,17 @@ class Bot:
         df15 = self.ex.klines(symbol, "15", 100)
         dfd = self._klines_cached(symbol, "D", 250, 3600)
         time.sleep(0.15)   # бережём лимит запросов Bybit при скане 40 пар
-        ta = snapshot(df1h, df4h, df15, dfd)
+        # Теханализ только по закрытым свечам: незакрытая свеча «мигает» (пробой внутри часа часто не доживает
+        # до закрытия), а проверка на истории велась по закрытым. Текущая цена берётся отдельно.
+        now_ms = int(time.time() * 1000)
+
+        def closed(df, ms):
+            return df[df["ts"] + ms <= now_ms].reset_index(drop=True) if df is not None and len(df) else df
+
+        ta = snapshot(closed(df1h, 3_600_000), closed(df4h, 14_400_000), df15, closed(dfd, 86_400_000))
         tk = self.ex.ticker(symbol)
+        if ta:
+            ta["price_now"] = tk["last"] or float(df1h["close"].iloc[-1])
         tk["long_ratio"] = self.ex.long_short_ratio(symbol)
         oi = self.ex.open_interest(symbol, 24)
         self.cache[symbol] = (time.time(), ta, tk, oi, df1h)
@@ -205,7 +214,11 @@ class Bot:
         candidates.sort(key=lambda x: x[0].strength, reverse=True)
         log.info("%s: %d символов, кандидатов %d", tag, len(symbols), len(candidates))
         opened = 0
+        dirs_done = set()   # одновременные сигналы в одну сторону = одна ставка на рынок: берём только сильнейший
         for sig, ta, tk in candidates:
+            if sig.direction in dirs_done:
+                log.info("%s: уже есть вход в эту сторону в этом скане", sig.symbol)
+                continue
             can, why = self.risk.can_open(sig.symbol, open_trades, positions, equity, sig.direction, sig.event_key,
                                           sig.tier)
             if not can:
@@ -240,6 +253,7 @@ class Bot:
                 continue
             tid = self.exe.open(sig, ta, equity, positions)
             if tid:
+                dirs_done.add(sig.direction)
                 opened += 1
                 open_trades = self.j.open_trades() + [
                     {"symbol": p["symbol"], "side": p["side"], "entry": p["price"], "stop_init": p["stop"],

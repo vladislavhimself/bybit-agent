@@ -63,7 +63,7 @@ class Executor:
     def open(self, sig, ta, equity, positions):
         r = self.s.get("risk")
         e = self.s.get("entry") or {}
-        price = ta["close"]
+        price = ta.get("price_now") or ta["close"]
         dist = ta["atr"] * r["stop_atr_mult"]
         long = sig.direction == "long"
         side = "Buy" if long else "Sell"
