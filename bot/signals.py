@@ -94,8 +94,15 @@ def positioning_score(ticker, oi_hist, ta, whale_net=0.0, mood=0.0):
     return max(-1.0, min(1.0, score)), reasons
 
 
+def _no(diag, reason, strength):
+    if diag is not None:
+        diag["reason"], diag["strength"] = reason, round(strength, 3)
+    return None
+
+
 def build_signal(symbol, base, ta, ticker, oi_hist, events, params, now=None, playbook=None, whale_net=0.0, mood=0.0,
-                 df1h=None, psych_cfg=None):
+                 df1h=None, psych_cfg=None, diag=None):
+    """diag: словарь, куда записывается причина отказа (для сводки «почему нет сделок»)."""
     p = params
     ns, nreasons, used = news_score(base, events, p["min_news_importance"], now,
                                     playbook if p.get("use_playbook", True) else None, df1h, psych_cfg)
@@ -129,17 +136,17 @@ def build_signal(symbol, base, ta, ticker, oi_hist, events, params, now=None, pl
 
     # Во флэте торгуем только от сильных новостей
     if ta["regime"] == "range" and abs(ns) < 0.3:
-        return None
+        return _no(diag, "range", strength)
     # В экстремальной волатильности стоп 1.5-2 ATR выбивает шумом: без весомой новости не входим
     if ta["regime"] == "high_vol" and abs(ns) < 0.3:
-        return None
+        return _no(diag, "high_vol", strength)
     # Не торгуем против тренда 4ч без весомой новости
     if ta["trend_4h"] != 0 and (ta["trend_4h"] > 0) != (sign > 0) and abs(ns) < 0.5:
-        return None
+        return _no(diag, "counter_4h", strength)
 
     # Погоня за движением: если за сутки цена уже прошла >15% в нашу сторону и новости нет, не входим.
     if abs(ns) < 0.3 and abs(ta["ret_24h"]) > 15 and (ta["ret_24h"] > 0) == (sign > 0):
-        return None
+        return _no(diag, "chase", strength)
 
     # Растяжение: цена уже прошла >= max_extension_atr ATR(1ч) за 24ч в нашу сторону = вход в конце движения.
     # На 400 днях истории по 26 парам такие входы убыточны, а на живом счёте 12 из 13 таких сделок закрылись
@@ -147,11 +154,11 @@ def build_signal(symbol, base, ta, ticker, oi_hist, events, params, now=None, pl
     ext = sign * ta["ret_24h"] / ta["atr_pct"] if ta.get("atr_pct") else 0.0
     fresh = any(e.get("age_h", 99) * 60 <= p.get("fresh_news_minutes", 20) and e["importance"] >= 7 for e in used)
     if ext >= p.get("max_extension_atr", 2.0) and not fresh:
-        return None
+        return _no(diag, "extension", strength)
 
     t = p["entry_threshold"]
     if strength < t:
-        return None
+        return _no(diag, "weak", strength)
     if strength >= p["conviction_threshold"] and agreement >= 0.99 and len(nonzero) >= 2:
         tier = "conviction"
     elif strength >= t + 0.18:

@@ -4,6 +4,7 @@
 сопровождение позиций -> периодический скан рынка -> отчёты -> самообучение."""
 import logging
 import queue
+from collections import Counter
 import sys
 import threading
 import time
@@ -74,6 +75,9 @@ class Bot:
         self.last = {"scan": 0, "manage": 0, "report": 0, "review": 0}
         self.closed_since_review = 0
         self.err_count, self.last_err_sent = 0, 0.0
+        self.funnel_since_report = Counter()   # причины отказа с прошлого отчёта о балансе
+        self.best_weak_since_report = None
+        self.last_funnel = (Counter(), None)
         self.cache = {}   # symbol -> (ts, ta, ticker, oi, df1h)
         self.kcache = {}  # (symbol, interval) -> (ts, df) для старших таймфреймов
 
@@ -195,6 +199,7 @@ class Bot:
             {"symbol": p["symbol"], "side": p["side"], "entry": p["price"], "stop_init": p["stop"], "qty": p["qty"],
              "qty_init": p["qty"], "event_key": p.get("event_key", ""), "pending": True} for p in self.j.pendings()]
         candidates = []
+        funnel, best_weak = Counter(), None
         for sym in symbols:
             if sym not in inst:
                 continue
@@ -202,17 +207,30 @@ class Bot:
                 ta, tk, oi = self.market_data(sym, max_age)
             except Exception as e:  # noqa: BLE001
                 log.debug("%s: данные: %s", sym, e)
+                funnel["error"] += 1
                 continue
             if not ta:
+                funnel["no_data"] += 1
                 continue
             df1h = self.cache.get(sym, (0, None, None, None, None))[4]
+            dg = {}
             sig = build_signal(sym, inst[sym]["base"], ta, tk, oi, events, params, playbook=self.playbook,
                                whale_net=self.whales.net_score(inst[sym]["base"]), mood=self.mood.score(),
-                               df1h=df1h, psych_cfg=self.s.get("psychology") or {})
+                               df1h=df1h, psych_cfg=self.s.get("psychology") or {}, diag=dg)
             if sig:
                 candidates.append((sig, ta, tk))
+            else:
+                funnel[dg.get("reason", "no_data")] += 1
+                if dg.get("reason") == "weak" and (best_weak is None or dg["strength"] > best_weak[1]):
+                    best_weak = (sym, dg["strength"])
         candidates.sort(key=lambda x: x[0].strength, reverse=True)
-        log.info("%s: %d символов, кандидатов %d", tag, len(symbols), len(candidates))
+        thr = self.s.get("signals.entry_threshold")
+        log.info("%s: %d символов, кандидатов %d | %s", tag, len(symbols), len(candidates),
+                 fmt.funnel_text(funnel, best_weak, thr))
+        self.last_funnel = (funnel, best_weak)
+        self.funnel_since_report.update(funnel)
+        if best_weak and (self.best_weak_since_report is None or best_weak[1] > self.best_weak_since_report[1]):
+            self.best_weak_since_report = best_weak
         opened = 0
         dirs_done = set()   # одновременные сигналы в одну сторону = одна ставка на рынок: берём только сильнейший
         for sig, ta, tk in candidates:
@@ -314,7 +332,11 @@ class Bot:
             llm = {"calls": c["calls"], "usd": c["usd"], "budget": self.analyst.budget}
         self.tg.send(fmt.balance_message(equity, m, positions, self.j.stats(), float(self.s.get("risk.capital_cap_usd") or 0),
                                          llm, self.cal.next_high(), self.xstream.status() if self.xstream else None,
-                                         pendings=self.j.pendings()))
+                                         pendings=self.j.pendings(),
+                                         why_none=fmt.funnel_text(self.funnel_since_report, self.best_weak_since_report,
+                                                                  self.s.get("signals.entry_threshold"))
+                                         if self.funnel_since_report else None))
+        self.funnel_since_report, self.best_weak_since_report = Counter(), None
 
     def handle_commands(self, equity, positions):
         for cmd in self.tg.pop_commands():
@@ -344,8 +366,12 @@ class Bot:
                     self.reviewer.run(apply=self._auto_apply())
             elif c == "/calendar":
                 self.tg.send(self.cal.context_text(96))
+            elif c == "/why":
+                f, bw = self.last_funnel
+                self.tg.send("Последний скан, почему нет входа:\n"
+                             + fmt.funnel_text(f, bw, self.s.get("signals.entry_threshold"), top=8))
             elif c == "/help":
-                self.tg.send("/status /stop /panic /resume /review /approve /lessons /calendar")
+                self.tg.send("/status /why /stop /panic /resume /review /approve /lessons /calendar")
 
     def _auto_apply(self):
         return bool(self.s.get("learning.auto_apply")) and self.s.mode != "live"

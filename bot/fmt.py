@@ -6,6 +6,23 @@ RU_TYPE = {
     "macro": "макро", "etf": "ETF", "partnership": "партнёрство", "whale": "киты", "upgrade": "обновление сети",
     "outage": "сбой", "legal": "суд", "token_unlock": "разблокировка", "earnings": "отчёт", "other": "событие",
 }
+REASONS_RU = {
+    "range": "флэт без сильной новости", "high_vol": "резкая волатильность без новости",
+    "counter_4h": "против тренда 4ч", "chase": "цена уже ушла больше 15%",
+    "extension": "цена уже прошла 2+ ATR за сутки (поздно)", "weak": "сигнал слабее порога",
+    "no_data": "мало данных", "error": "ошибка данных",
+}
+
+
+def funnel_text(counter, best_weak=None, threshold=None, top=5):
+    if not counter:
+        return "нет данных"
+    s = "; ".join(f"{REASONS_RU.get(k, k)}: {v}" for k, v in counter.most_common(top))
+    if best_weak and threshold:
+        s += f". Ближе всего к входу: {base_of(best_weak[0])} (сила {best_weak[1]:.2f} при пороге {threshold:.2f})"
+    return s
+
+
 TIER_RU = {"low": "малый", "medium": "средний", "high": "крупный", "conviction": "максимальный"}
 
 
@@ -70,7 +87,7 @@ def close_message(t, pnl, pnl_r, reason, tradable=None):
 
 
 def balance_message(equity, m, positions, stats, cap, llm=None, next_macro=None, xstream=None, halted_hint=True,
-                    pendings=None):
+                    pendings=None, why_none=None):
     lines = ["💼 БАЛАНС"]
     if cap:
         lines.append(f"Торговый капитал: {m['tradable']:.2f} USDT (лимит {cap:.0f}, прибыль с начала {m['tradable'] + m['reserve'] - cap:+.2f})")
@@ -98,6 +115,8 @@ def balance_message(equity, m, positions, stats, cap, llm=None, next_macro=None,
         lines.append(f"Модель сегодня: {llm['calls']} вызовов, {llm['usd']:.2f}$ из {llm['budget']:.0f}$")
     if next_macro:
         lines.append(f"Ближайшее макро: {next_macro}")
+    if why_none:
+        lines.append(f"Почему не было входов (сумма проверок): {why_none}")
     if xstream:
         lines.append(f"Поток X: {xstream}")
     return "\n".join(lines)
