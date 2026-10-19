@@ -129,6 +129,9 @@ def build_signal(symbol, base, ta, ticker, oi_hist, events, params, now=None, pl
     if ta.get("timing_15m", 0) != 0 and (ta["timing_15m"] > 0) != (sign > 0):
         strength *= 0.85  # 15-минутный импульс против нас: ждём лучшей точки
 
+    if diag is not None:
+        diag.update(direction="long" if sign > 0 else "short", comps=comps, news_driven=abs(ns) >= 0.3,
+                    ext=round(sign * ta["ret_24h"] / ta["atr_pct"], 2) if ta.get("atr_pct") else 0.0)
     reasons = nreasons + preasons + [
         f"ТА: режим {ta['regime']}, тренд1ч {ta['trend_1h']:+d}, тренд4ч {ta['trend_4h']:+d}, "
         f"пробой {ta['breakout']:+d}, RSI {ta['rsi']}, ADX {ta['adx']}, ATR {ta['atr_pct']}%"

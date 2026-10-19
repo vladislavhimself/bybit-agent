@@ -103,7 +103,7 @@ class Executor:
         wait = int(e.get("wait_minutes", 90))
         sig.reasons.append("вход на откате: " + why)
         payload = self._sig_payload(sig, ta)
-        payload.update({"lev": lev, "dist": dist})
+        payload.update({"lev": lev, "dist": dist, "ref_price": price, "pull": k})
         self.j.add_pending({"symbol": sig.symbol, "side": side, "qty": qty, "price": limit, "stop": stop,
                             "order_id": order_id, "expires_ts": int(time.time()) + wait * 60,
                             "event_key": sig.event_key, "payload": payload})
@@ -172,6 +172,15 @@ class Executor:
             elif now >= p["expires_ts"]:
                 self.ex.cancel_order(p["symbol"], p["order_id"])
                 self.j.remove_pending(p["id"])
+                if getattr(self, "shadow", None) and pay.get("ref_price"):
+                    try:   # что было бы, если бы вошли сразу по рынку
+                        self.shadow.record(p["symbol"], pay["direction"], "pullback_not_filled", pay["strength"],
+                                           self.s.get("signals.entry_threshold"), pay["ref_price"], pay["atr"],
+                                           regime=pay.get("regime", ""), comps=pay.get("components"),
+                                           news_driven=pay.get("news_driven", False), ts=p["created_ts"],
+                                           pull_atr=pay.get("pull"))
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("теневая сделка: %s", e)
                 self.tg.send(f"⌛ {fmt.base_of(p['symbol'])}: откат к {p['price']:g} не случился, ордер снят без сделки")
 
     def cancel_pendings(self, reason, symbols=None):

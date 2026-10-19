@@ -30,6 +30,8 @@ TUNABLE_BOUNDS = {
     "risk.risk_per_trade_pct.medium": (0.3, 1.0),
     "risk.risk_per_trade_pct.high": (0.5, 2.0),
     "risk.risk_per_trade_pct.conviction": (1.0, 4.0),
+    "signals.max_extension_atr": (1.5, 3.5),   # по теневым сделкам фильтра позднего входа
+    "entry.pullback_atr": (0.2, 0.8),          # по теневым сделкам неисполненных откатов
 }
 
 

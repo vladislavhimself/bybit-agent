@@ -26,6 +26,13 @@ CREATE TABLE IF NOT EXISTS pending (
     id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, side TEXT, qty REAL, price REAL, stop REAL, order_id TEXT,
     created_ts INTEGER, expires_ts INTEGER, event_key TEXT, payload TEXT
 );
+CREATE TABLE IF NOT EXISTS shadow (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, symbol TEXT, side TEXT, reason TEXT, strength REAL,
+    threshold REAL, price REAL, atr REAL, stop_dist REAL, pull_atr REAL, regime TEXT, comps TEXT, ext REAL,
+    news_driven INTEGER, event_key TEXT, status TEXT DEFAULT 'open', next_check_ts INTEGER,
+    r_market REAL, r_pullback REAL, exit_market TEXT, mfe REAL, mae REAL, resolved_ts INTEGER
+);
+CREATE INDEX IF NOT EXISTS shadow_key ON shadow(symbol, side, reason, ts);
 CREATE TABLE IF NOT EXISTS lessons (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, text TEXT, source TEXT);
 CREATE TABLE IF NOT EXISTS equity (ts INTEGER PRIMARY KEY, equity REAL);
 CREATE TABLE IF NOT EXISTS reviews (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, summary TEXT, changes TEXT, applied INTEGER);
@@ -150,6 +157,34 @@ class Journal:
 
     def update_stop(self, trade_id, stop):
         self._run("UPDATE trades SET stop=? WHERE id=?", (stop, trade_id))
+
+    # ---- теневые сделки ----
+    def add_shadow(self, d):
+        cols = ",".join(d)
+        return self._run(f"INSERT INTO shadow({cols}) VALUES({','.join('?' * len(d))})", tuple(d.values()))
+
+    def shadow_exists(self, symbol, side, reason, since_ts):
+        r = self._run("SELECT 1 FROM shadow WHERE symbol=? AND side=? AND reason=? AND ts>=? LIMIT 1",
+                      (symbol, side, reason, since_ts), "one")
+        return r is not None
+
+    def shadows_due(self, now, limit):
+        return self._run("SELECT * FROM shadow WHERE status='open' AND next_check_ts<=? ORDER BY next_check_ts LIMIT ?",
+                         (now, limit), "all")
+
+    def shadow_next_check(self, sid, ts):
+        self._run("UPDATE shadow SET next_check_ts=? WHERE id=?", (ts, sid))
+
+    def resolve_shadow(self, sid, r_market, r_pullback, exit_market, mfe, mae, now):
+        self._run("UPDATE shadow SET status='done', r_market=?, r_pullback=?, exit_market=?, mfe=?, mae=?, resolved_ts=? "
+                  "WHERE id=?", (r_market, r_pullback, exit_market, mfe, mae, now, sid))
+
+    def shadows_resolved(self, since_resolved_ts):
+        return self._run("SELECT * FROM shadow WHERE status='done' AND resolved_ts>? ORDER BY resolved_ts DESC",
+                         (since_resolved_ts,), "all")
+
+    def shadows_open_count(self):
+        return self._run("SELECT COUNT(*) AS n FROM shadow WHERE status='open'", (), "one")["n"]
 
     def last_entry_ts(self, symbol, side):
         r = self._run("SELECT MAX(opened_ts) AS m FROM trades WHERE symbol=? AND side=?", (symbol, side), "one")

@@ -24,6 +24,7 @@ from .notify import Telegram
 from .playbook import Playbook
 from .review import Reviewer
 from .risk import RiskManager
+from .shadow import ShadowBook
 from .signals import build_signal
 from .ta import snapshot
 from .whales import WhaleFlows, parse as parse_whale
@@ -59,10 +60,14 @@ class Bot:
         self.risk = RiskManager(self.s, self.ex, self.j, self.cal)
         self.exe = Executor(self.s, self.ex, self.risk, self.j, self.tg)
         self.whales = WhaleFlows(self.j)
+        self.shadow = ShadowBook(self.s, self.j, self.ex)
+        self.exe.shadow = self.shadow
         self.mood = MarketMood()
         self.analyst = (Analyst(self.s, self.j, self.playbook, self.cal, self.whales, self.mood)
                         if self.s.has_anthropic else None)
         self.reviewer = Reviewer(self.s, self.j, self.tg) if self.s.has_anthropic else None
+        if self.reviewer:
+            self.reviewer.shadow = self.shadow   # разбор учитывает и теневые сделки
         self.news = NewsCollector(self.ex, self.j, self.s)
         self.events_q = queue.Queue()
         self.raw_q = queue.Queue()          # посты из потока X, минуя опрос
@@ -221,6 +226,7 @@ class Bot:
                 candidates.append((sig, ta, tk))
             else:
                 funnel[dg.get("reason", "no_data")] += 1
+                self._shadow_from_diag(sym, dg, ta)
                 if dg.get("reason") == "weak" and (best_weak is None or dg["strength"] > best_weak[1]):
                     best_weak = (sym, dg["strength"])
         candidates.sort(key=lambda x: x[0].strength, reverse=True)
@@ -236,11 +242,15 @@ class Bot:
         for sig, ta, tk in candidates:
             if sig.direction in dirs_done:
                 log.info("%s: уже есть вход в эту сторону в этом скане", sig.symbol)
+                self._shadow_from_signal(sig, ta, "one_per_scan")
                 continue
             can, why = self.risk.can_open(sig.symbol, open_trades, positions, equity, sig.direction, sig.event_key,
                                           sig.tier)
             if not can:
                 log.info("%s: %s", sig.symbol, why)
+                code = getattr(self.risk, "last_reject", "")
+                if code and code != "symbol_busy":
+                    self._shadow_from_signal(sig, ta, "limit_" + code)
                 continue
             if sig.tier == "conviction":
                 if not self.analyst:
@@ -280,6 +290,28 @@ class Bot:
                 positions = self.ex.positions()
                 equity, _ = self.ex.equity()
         return opened
+
+    # ---------- теневые сделки ----------
+    def _shadow_from_diag(self, sym, dg, ta):
+        try:
+            thr = self.s.get("signals.entry_threshold")
+            reason, strength = dg.get("reason"), dg.get("strength", 0.0)
+            if reason and dg.get("direction") and self.shadow.wants(reason, strength, thr):
+                self.shadow.record(sym, dg["direction"], reason, strength, thr, ta.get("price_now") or ta["close"],
+                                   ta["atr"], regime=ta.get("regime", ""), comps=dg.get("comps"), ext=dg.get("ext", 0.0),
+                                   news_driven=dg.get("news_driven", False))
+        except Exception as e:  # noqa: BLE001
+            log.warning("теневая сделка %s: %s", sym, e)
+
+    def _shadow_from_signal(self, sig, ta, reason):
+        try:
+            thr = self.s.get("signals.entry_threshold")
+            ext = ((1 if sig.direction == "long" else -1) * ta["ret_24h"] / ta["atr_pct"]) if ta.get("atr_pct") else 0.0
+            self.shadow.record(sig.symbol, sig.direction, reason, sig.strength, thr, ta.get("price_now") or ta["close"],
+                               ta["atr"], regime=ta.get("regime", ""), comps=sig.components, ext=ext,
+                               news_driven=sig.news_driven, event_key=sig.event_key)
+        except Exception as e:  # noqa: BLE001
+            log.warning("теневая сделка %s: %s", sig.symbol, e)
 
     def step_scan(self, equity, positions):
         universe = self.ex.universe()
@@ -333,6 +365,7 @@ class Bot:
         self.tg.send(fmt.balance_message(equity, m, positions, self.j.stats(), float(self.s.get("risk.capital_cap_usd") or 0),
                                          llm, self.cal.next_high(), self.xstream.status() if self.xstream else None,
                                          pendings=self.j.pendings(),
+                                         shadow_line=self.shadow.summary_text(7, top=3),
                                          why_none=fmt.funnel_text(self.funnel_since_report, self.best_weak_since_report,
                                                                   self.s.get("signals.entry_threshold"))
                                          if self.funnel_since_report else None))
@@ -366,12 +399,16 @@ class Bot:
                     self.reviewer.run(apply=self._auto_apply())
             elif c == "/calendar":
                 self.tg.send(self.cal.context_text(96))
+            elif c == "/shadow":
+                self.tg.send("👻 Теневые сделки (сигналы, которые бот не взял, проверенные по факту)\n"
+                             + self.shadow.summary_text(7, top=10, detailed=True) + "\n\n"
+                             + self.shadow.summary_text(30, top=10, detailed=True))
             elif c == "/why":
                 f, bw = self.last_funnel
                 self.tg.send("Последний скан, почему нет входа:\n"
                              + fmt.funnel_text(f, bw, self.s.get("signals.entry_threshold"), top=8))
             elif c == "/help":
-                self.tg.send("/status /why /stop /panic /resume /review /approve /lessons /calendar")
+                self.tg.send("/status /why /shadow /stop /panic /resume /review /approve /lessons /calendar")
 
     def _auto_apply(self):
         return bool(self.s.get("learning.auto_apply")) and self.s.mode != "live"
@@ -407,6 +444,10 @@ class Bot:
                     self.last["manage"] = now
                     self.j.log_equity(equity)
                     self.exe.check_pendings(equity)
+                    try:
+                        self.shadow.resolve_due()
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("проверка теневых сделок: %s", e)
                     closed = self.exe.manage()
                     self.closed_since_review += len(closed)
                     self.exe.reconcile()

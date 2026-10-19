@@ -1,6 +1,7 @@
 """Самообучение: периодический разбор закрытых сделок моделью, уроки и правки параметров в заданных границах."""
 import json
 import logging
+import time
 from typing import List
 
 import anthropic
@@ -30,6 +31,11 @@ SYSTEM = """Ты проводишь разбор сделок автономно
 - Уроки формулируй как проверяемые правила ("не входить в лонг при фандинге выше 0.05%"), не общими словами.
 - Правки параметров только из списка разрешённых и только в их границах. Меняй не больше 3 параметров за раз
   и не более чем на 20% от текущего значения. Если данных мало, param_changes оставь пустым.
+- Теневые сделки: это сигналы, которые бот отклонил, проверенные на реальных свечах по тем же правилам выхода.
+  Если отклонённые каким-то фильтром сделки в среднем заметно в плюс (от +0.10R при n от 15), фильтр мешает
+  и его можно ослабить: extension -> signals.max_extension_atr вверх; weak -> signals.entry_threshold вниз;
+  pullback_not_filled -> entry.pullback_atr вниз. Если в среднем в минус (до -0.10R), фильтр полезен, не ослабляй.
+  Фильтры range, high_vol, counter_4h, one_per_scan и limit_* параметрами не настраиваются: по ним только уроки.
 - Всё на русском, кратко."""
 
 
@@ -38,6 +44,7 @@ class Reviewer:
         self.s, self.j, self.tg = settings, journal, tg
         self.client = anthropic.Anthropic(max_retries=3, timeout=180.0)
         self.model = settings.get("llm.review_model")
+        self.shadow = None   # ShadowBook, подключается из main
 
     def lessons_text(self, limit=15):
         rows = self.j.lessons(limit)
@@ -47,8 +54,12 @@ class Reviewer:
         # Разбираем только сделки, закрытые после прошлого разбора: одни и те же убытки нельзя наказывать дважды
         last_ts = self.j.kv_get("last_review_ts", 0)
         trades = [t for t in self.j.closed_trades(40) if t["closed_ts"] > last_ts]
-        if len(trades) < 5:
-            log.info("Разбор: новых закрытых сделок %d (нужно 5), пропуск", len(trades))
+        last_sh = self.j.kv_get("last_shadow_review_ts", 0)
+        sh_text, sh_new = self.shadow.review_block(last_sh) if self.shadow else ("", 0)
+        need_sh = (self.s.get("shadow") or {}).get("min_for_review", 20)
+        if len(trades) < 5 and sh_new < need_sh:
+            log.info("Разбор: новых закрытых сделок %d (нужно 5), новых теневых %d (нужно %d), пропуск",
+                     len(trades), sh_new, need_sh)
             return None
         stats = self.j.stats()
         prev = [t for t in self.j.closed_trades(40) if t["closed_ts"] <= last_ts][:15]
@@ -70,6 +81,7 @@ class Reviewer:
                 f"{json.dumps(compact, ensure_ascii=False, indent=1)}\n\n"
                 f"Старые сделки только для контекста, по ним выводы уже сделаны:\n"
                 f"{json.dumps(prev_compact, ensure_ascii=False)}\n\n"
+                f"{sh_text}\n\n"
                 f"Важно: если новых сделок мало или они не образуют закономерность, param_changes оставь пустым. "
                 f"Повышение entry_threshold допустимо только если новые сделки показывают, что слабые сигналы "
                 f"проигрывают, а сильные нет; иначе бот перестанет торговать и учиться.")
@@ -94,10 +106,13 @@ class Reviewer:
             else:
                 lines.append(f"предложение: {ch.name} -> {ch.new_value} — {ch.reason}")
         self.j.add_review(rv.summary, [c.model_dump() for c in rv.param_changes], apply)
-        self.j.kv_set("last_review_ts", max(t["closed_ts"] for t in trades))
+        if len(trades) >= 5:
+            self.j.kv_set("last_review_ts", max(t["closed_ts"] for t in trades))
+        if sh_new:
+            self.j.kv_set("last_shadow_review_ts", int(time.time()))
         if not apply and rv.param_changes:
             self.j.kv_set("pending_changes", [c.model_dump() for c in rv.param_changes])
-        text = ("🧠 Разбор сделок\n" + rv.summary + "\n\nУроки:\n" + "\n".join("• " + l for l in rv.lessons)
+        text = (f"🧠 Разбор: реальных сделок {len(trades)}, теневых {sh_new}\n" + rv.summary + "\n\nУроки:\n" + "\n".join("• " + l for l in rv.lessons)
                 + ("\n\nПараметры:\n" + "\n".join(lines) if lines else "")
                 + ("" if apply or not rv.param_changes else "\n\nПрименить: /approve"))
         self.tg.send(text)

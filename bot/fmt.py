@@ -87,7 +87,7 @@ def close_message(t, pnl, pnl_r, reason, tradable=None):
 
 
 def balance_message(equity, m, positions, stats, cap, llm=None, next_macro=None, xstream=None, halted_hint=True,
-                    pendings=None, why_none=None):
+                    pendings=None, why_none=None, shadow_line=None):
     lines = ["💼 БАЛАНС"]
     if cap:
         lines.append(f"Торговый капитал: {m['tradable']:.2f} USDT (лимит {cap:.0f}, прибыль с начала {m['tradable'] + m['reserve'] - cap:+.2f})")
@@ -117,6 +117,8 @@ def balance_message(equity, m, positions, stats, cap, llm=None, next_macro=None,
         lines.append(f"Ближайшее макро: {next_macro}")
     if why_none:
         lines.append(f"Почему не было входов (сумма проверок): {why_none}")
+    if shadow_line:
+        lines.append(f"Теневые сделки {shadow_line}")
     if xstream:
         lines.append(f"Поток X: {xstream}")
     return "\n".join(lines)
