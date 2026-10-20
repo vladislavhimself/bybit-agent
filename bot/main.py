@@ -287,7 +287,7 @@ class Bot:
                     continue
                 plan = self.exe._tp_plan(sig.symbol, qty, ta["close"], dist, sig.direction == "long")
                 self.tg.send(fmt.entry_message(sig, ta["close"], qty, lev, stop, plan, r["risk_per_trade_pct"][sig.tier],
-                                               dist * qty, self.risk.tradable(equity), equity, ta, dry=True))
+                                               dist * qty, self.risk.tradable(equity), equity, ta, dry=True), html=True)
                 continue
             tid = self.exe.open(sig, ta, equity, positions)
             if tid:
@@ -389,7 +389,7 @@ class Bot:
                                          shadow_line=self.shadow.summary_text(7, top=3),
                                          why_none=fmt.funnel_text(self.funnel_since_report, self.best_weak_since_report,
                                                                   self.s.get("signals.entry_threshold"))
-                                         if self.funnel_since_report else None))
+                                         if self.funnel_since_report else None), html=True)
         self.funnel_since_report, self.best_weak_since_report = Counter(), None
 
     def handle_commands(self, equity, positions):

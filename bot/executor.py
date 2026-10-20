@@ -111,10 +111,13 @@ class Executor:
                             "order_id": order_id, "expires_ts": int(time.time()) + wait * 60,
                             "event_key": sig.event_key, "payload": payload})
         base = fmt.base_of(sig.symbol)
-        self.tg.send(f"⏳ ОРДЕР НА ОТКАТ: {base}, {'ЛОНГ' if long else 'ШОРТ'}, размер {fmt.TIER_RU.get(sig.tier, sig.tier)}\n"
-                     f"Сейчас {price:g}, ждём {limit:g} (откат {k} ATR), стоп {stop:g}, объём {qty:g} {base}, плечо {lev}x\n"
-                     f"Если за {wait} мин цена не придёт, ордер снимется\n"
-                     f"Почему: {'; '.join(fmt.short_reasons(sig, ta))}")
+        self.tg.send("\n\n".join([
+            f"⏳ ОРДЕР НА ОТКАТ: <b>{fmt.esc(base)} {'ЛОНГ' if long else 'ШОРТ'}</b>",
+            fmt.block("Направление", f"{'ЛОНГ' if long else 'ШОРТ'}, размер {fmt.TIER_RU.get(sig.tier, sig.tier)}, плечо {lev}x"),
+            fmt.block("Ждём цену", f"Сейчас {price:g}, лимитка {limit:g} (откат {k} ATR), стоп {stop:g}, объём {qty:g}",
+                      f"Если за {wait} мин цена не придёт, ордер снимется"),
+            fmt.block("Почему", *[fmt.esc(x) for x in fmt.short_reasons(sig, ta)]),
+        ]), html=True)
         return -1
 
     def _mult(self, symbol):
@@ -157,7 +160,7 @@ class Executor:
         risk_pct = r["risk_per_trade_pct"][sig.tier]
         ta_short = {"trend_1h": 0, "trend_4h": 0, "trend_d": 0, "breakout": 0, "rsi": 0}
         self.tg.send(fmt.entry_message(sig, entry, qty, lev, stop, plan, risk_pct, abs(entry - stop) * qty * mult,
-                                       self.risk.tradable(equity), equity, ta_short, mult=mult, fee=fee_in))
+                                       self.risk.tradable(equity), equity, ta_short, mult=mult, fee=fee_in), html=True)
         return tid
 
     def check_pendings(self, equity):
@@ -236,8 +239,11 @@ class Executor:
                 new_hits = max(new_hits, hits)
                 self.j.update_partial(t["id"], pos["qty"], new_hits)
                 if new_hits > hits:
-                    self.tg.send(f"💰 ЧАСТИЧНЫЙ ТЕЙК: {fmt.base_of(sym)}, тейк {new_hits} исполнен по {mark:g}, "
-                                 f"остаток {pos['qty']:g} {fmt.base_of(sym)}, стоп переносится в безубыток")
+                    self.tg.send("\n\n".join([
+                        f"💰 ЧАСТИЧНЫЙ ТЕЙК: <b>{fmt.esc(fmt.base_of(sym))}</b>",
+                        fmt.block("Исполнено", f"Тейк {new_hits} по {mark:g}"),
+                        fmt.block("Остаток", f"{pos['qty']:g}, стоп переносится в безубыток"),
+                    ]), html=True)
                     if hits == 0 and r.get("breakeven_after_tp1"):
                         be = t["entry"] * (1 + 0.0015 * (1 if long else -1))
                         self._move_stop(t, be, "безубыток после первого тейка")
@@ -388,7 +394,7 @@ class Executor:
             tradable = self.risk.tradable(self.ex.equity()[0])
         except Exception:  # noqa: BLE001
             tradable = None
-        self.tg.send(fmt.close_message(t, pnl, pnl_r, reason, tradable, fees))
+        self.tg.send(fmt.close_message(t, pnl, pnl_r, reason, tradable, fees), html=True)
 
     def reconcile(self):
         """Дозаполнить результат сделок, по которым биржа не ответила при закрытии."""

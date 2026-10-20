@@ -442,7 +442,7 @@ class MoexExchange:
             if sym:
                 stops[sym] = q2f(so.get("stopPrice"))
         out = []
-        eq = q2f(p.get("totalAmountPortfolio")) or 1.0
+        eq = self.balances()["equity"] or 1.0   # totalAmountPortfolio завышен на стоимость контрактов
         for x in p.get("positions", []):
             if x.get("instrumentType") not in ("share", "futures"):
                 continue
@@ -454,8 +454,13 @@ class MoexExchange:
                 continue
             entry = q2f(x.get("averagePositionPrice")) or q2f(x.get("averagePositionPriceFifo"))
             mark = q2f(x.get("currentPrice")) or entry
+            mult = inst[sym]["mult"]
+            if x.get("instrumentType") == "futures":
+                upnl = q2f(x.get("varMargin")) if x.get("varMargin") is not None else (mark - entry) * lots * mult
+            else:
+                upnl = q2f(x.get("expectedYield")) if x.get("expectedYield") is not None else (mark - entry) * lots * mult
             out.append({"symbol": sym, "side": "Buy" if lots > 0 else "Sell", "qty": abs(lots), "entry": entry, "mark": mark,
-                        "upnl": q2f(x.get("expectedYield")), "leverage": abs(lots) * mark * inst[sym]["mult"] / eq,
+                        "upnl": upnl, "mult": mult, "leverage": abs(lots) * mark * mult / eq,
                         "sl": stops.get(sym, 0.0), "tp": 0.0, "liq": 0.0})
         return out
 

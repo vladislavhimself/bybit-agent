@@ -1,5 +1,6 @@
 """Telegram: отчёты о балансе, сделки, команды управления (/status /stop /panic /resume /approve)."""
 import logging
+import re
 import threading
 import time
 
@@ -19,14 +20,20 @@ class Telegram:
         if self.enabled:
             threading.Thread(target=self._poll_loop, daemon=True).start()
 
-    def send(self, text):
+    def send(self, text, html=False):
+        """html=True: текст с тегами <b>; если Telegram не принял разметку, уходит как обычный текст без тегов."""
         if not self.enabled:
             log.info("[TG] %s", text.replace("\n", " | "))
             return
         try:
             for chunk in (text[i:i + 3900] for i in range(0, len(text), 3900)):
-                requests.post(f"{self.base}/sendMessage", json={"chat_id": self.chat_id, "text": chunk},
-                              timeout=15)
+                body = {"chat_id": self.chat_id, "text": chunk}
+                if html:
+                    body["parse_mode"] = "HTML"
+                r = requests.post(f"{self.base}/sendMessage", json=body, timeout=15)
+                if html and r.status_code != 200:
+                    plain = re.sub(r"</?b>", "", chunk).replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+                    requests.post(f"{self.base}/sendMessage", json={"chat_id": self.chat_id, "text": plain}, timeout=15)
         except requests.RequestException as e:
             log.warning("Telegram send: %s", e)
 

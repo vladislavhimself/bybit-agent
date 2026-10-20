@@ -1,4 +1,6 @@
-"""Человеческие сообщения для Telegram: вход, выход, баланс, сигнал."""
+"""Человеческие сообщения для Telegram: вход, выход, баланс, сигнал. Сообщения о сделках и балансе — в HTML
+(жирные заголовки блоков), динамический текст экранируется через esc()."""
+import html
 import re
 
 RU_TYPE = {
@@ -62,6 +64,25 @@ def short_reasons(sig, ta=None, limit=3):
     return out[:limit]
 
 
+def esc(x):
+    return html.escape(str(x), quote=False)
+
+
+def money(x, d=None):
+    """Числа с пробелами в тысячах: 99 650.17; для сумм от 1000 копейки не показываем."""
+    if d is None:
+        d = 0 if abs(x) >= 1000 else 2
+    return f"{x:,.{d}f}".replace(",", " ")
+
+
+def signed(x, d=2):
+    return f"{x:+,.{d}f}".replace(",", " ")
+
+
+def block(title, *lines):
+    return f"<b>{title}</b>\n" + ("\n".join(l for l in lines if l) or "—")
+
+
 def entry_message(sig, entry, qty, lev, stop, plan, risk_pct, risk_usd, tradable, equity, ta=None, dry=False,
                   mult=1.0, fee=0.0):
     base = base_of(sig.symbol)
@@ -69,62 +90,72 @@ def entry_message(sig, entry, qty, lev, stop, plan, risk_pct, risk_usd, tradable
     notional = qty * entry * mult
     head = "🧪 СИГНАЛ (dry-run, сделка НЕ открыта)" if dry else "🟢 ВХОД"
     tps = " / ".join(f"{l['price']:g}" for l in plan) if plan else "нет, только трейлинг"
-    lines = [
-        f"{head}: {base}, {side}, размер {TIER_RU.get(sig.tier, sig.tier)}",
-        f"Вход {entry:g}, объём {qty:g} {'лот.' if mult != 1.0 else base} (~{notional:.0f} {CUR}), плечо {lev}x"
-        + (f", комиссия входа {fee:.2f} {CUR}" if fee else ""),
-        f"Стоп {stop:g} (риск {risk_pct}% = {risk_usd:.2f} {CUR}), тейки {tps}",
-        "Почему: " + "; ".join(short_reasons(sig, ta)),
-        f"Капитал: торговый {tradable:.0f} {CUR}, в сделке {notional / tradable * 100 if tradable else 0:.0f}%; "
-        f"весь счёт {equity:.0f} {CUR}",
+    unit = "лот." if mult != 1.0 else base
+    parts = [
+        f"{head}: <b>{esc(base)} {side}</b>",
+        block("Направление", f"{side}, размер {TIER_RU.get(sig.tier, sig.tier)}, плечо {lev}x"),
+        block("Вход", f"{entry:g}, объём {qty:g} {esc(unit)} (~{money(notional)} {CUR})"
+              + (f", комиссия входа {money(fee)} {CUR}" if fee else "")),
+        block("Стоп и тейки", f"Стоп {stop:g} (риск {risk_pct}% = {money(risk_usd)} {CUR})", f"Тейки {tps}"),
+        block("Почему", *[esc(r) for r in short_reasons(sig, ta)]),
+        block("Капитал", f"Торговый {money(tradable)} {CUR}, в сделке {notional / tradable * 100 if tradable else 0:.0f}%",
+              f"Весь счёт {money(equity)} {CUR}"),
     ]
-    return "\n".join(lines)
+    return "\n\n".join(parts)
 
 
 def close_message(t, pnl, pnl_r, reason, tradable=None, fees=None):
     base = base_of(t["symbol"])
     side = "ЛОНГ" if t["side"] == "Buy" else "ШОРТ"
     emoji = "✅" if pnl > 0 else "❌"
-    fee_txt = f", уже с учётом комиссии {fees:.2f} {CUR}" if fees else " (с учётом комиссии)"
-    s = f"{emoji} ВЫХОД: {base}, {side}: {pnl:+.2f} {CUR} ({pnl_r:+.2f}R){fee_txt}\nПричина: {reason}"
+    fee_txt = f"с учётом комиссии {money(fees, 2)} {CUR}" if fees else "с учётом комиссии"
+    parts = [
+        f"{emoji} ВЫХОД: <b>{esc(base)} {side}</b>",
+        block("Результат", f"{signed(pnl)} {CUR} ({pnl_r:+.2f}R), {fee_txt}"),
+        block("Причина", esc(reason)),
+    ]
     if tradable is not None:
-        s += f"\nТорговый капитал теперь {tradable:.2f} {CUR}"
-    return s
+        parts.append(block("Торговый капитал", f"{money(tradable)} {CUR}"))
+    return "\n\n".join(parts)
 
 
 def balance_message(equity, m, positions, stats, cap, llm=None, next_macro=None, xstream=None, halted_hint=True,
                     pendings=None, why_none=None, shadow_line=None):
-    lines = ["💼 БАЛАНС"]
+    parts = ["💼 <b>БАЛАНС</b>"]
     if cap:
-        lines.append(f"Торговый капитал: {m['tradable']:.2f} {CUR} (лимит {cap:.0f}, прибыль с начала {m['tradable'] + m['reserve'] - cap:+.2f})")
+        parts.append(block("Торговый капитал", f"{money(m['tradable'])} {CUR} (лимит {money(cap)})",
+                           f"Прибыль с начала: {signed(m['tradable'] + m['reserve'] - cap)} {CUR}"))
     else:
-        lines.append(f"Торговый капитал: {m['tradable']:.2f} {CUR}")
-    lines.append(f"Резерв прибыли: {m['reserve']:.2f} {CUR} | на счёте: {equity:.0f} {CUR}")
-    lines.append(f"Сегодня {m['day_pct']:+.1f}% | неделя {m['week_pct']:+.1f}% | просадка от пика {m['drawdown_pct']:.1f}%")
+        parts.append(block("Торговый капитал", f"{money(m['tradable'])} {CUR}"))
+    parts.append(block("Резерв прибыли", f"{money(m['reserve'])} {CUR} | на счёте {money(equity)} {CUR}"))
+    parts.append(block("Динамика", f"Сегодня {m['day_pct']:+.1f}% | неделя {m['week_pct']:+.1f}% | просадка от пика {m['drawdown_pct']:.1f}%"))
     if m["halted"] and halted_hint:
-        lines.append(f"⛔ Остановлен: {m['halt_reason']}. /resume чтобы продолжить")
+        parts.append(f"⛔ <b>Остановлен</b>: {esc(m['halt_reason'])}. /resume чтобы продолжить")
     if pendings:
-        lines.append("Ждут отката: " + ", ".join(f"{base_of(p['symbol'])} {'ЛОНГ' if p['side'] == 'Buy' else 'ШОРТ'} @ {p['price']:g}"
-                                               for p in pendings))
+        parts.append(block("Ждут отката", *[f"• {esc(base_of(p['symbol']))} {'ЛОНГ' if p['side'] == 'Buy' else 'ШОРТ'} @ {p['price']:g}"
+                                            for p in pendings]))
     if positions:
-        lines.append("Позиции:")
+        lines = []
         for p in positions:
             side = "ЛОНГ" if p["side"] == "Buy" else "ШОРТ"
-            lines.append(f"• {base_of(p['symbol'])} {side} {p['qty']:g} @ {p['entry']:g}, сейчас {p['upnl']:+.2f} {CUR}, "
-                         f"плечо {p['leverage']:.1f}x, стоп {p['sl']:g}")
+            notional = p["qty"] * p["entry"] * (p.get("mult") or 1.0)
+            pct = f" ({p['upnl'] / notional * 100:+.2f}%)" if notional else ""
+            lines.append(f"• {esc(base_of(p['symbol']))} {side} {p['qty']:g} @ {p['entry']:g}")
+            lines.append(f"   сейчас {signed(p['upnl'])} {CUR}{pct}, цена {p['mark']:g}, плечо {p['leverage']:.1f}x, стоп {p['sl']:g}")
+        parts.append(block("Позиции", *lines))
     else:
-        lines.append("Открытых позиций нет")
+        parts.append(block("Позиции", "открытых нет"))
     if stats.get("n"):
-        lines.append(f"Сделок {stats['n']}: прибыльных {stats['win_rate']}%, средний результат {stats['avg_r']}R, "
-                     f"итог {stats['pnl']:+.2f} {CUR} с учётом комиссий ({stats.get('fees', 0):.2f} {CUR})")
+        parts.append(block("Сделки", f"{stats['n']}: прибыльных {stats['win_rate']}%, средний результат {stats['avg_r']}R",
+                           f"Итог {signed(stats['pnl'])} {CUR} с учётом комиссий ({money(stats.get('fees', 0), 2)} {CUR})"))
     if llm:
-        lines.append(f"Модель сегодня: {llm['calls']} вызовов, {llm['usd']:.2f}$ из {llm['budget']:.0f}$")
+        parts.append(block("Модель сегодня", f"{llm['calls']} вызовов, {llm['usd']:.2f}$ из {llm['budget']:.0f}$"))
     if next_macro:
-        lines.append(f"Ближайшее макро: {next_macro}")
+        parts.append(block("Ближайшее макро", esc(next_macro)))
     if why_none:
-        lines.append(f"Почему не было входов (сумма проверок): {why_none}")
+        parts.append(block("Почему не было входов", esc(why_none)))
     if shadow_line:
-        lines.append(f"Теневые сделки {shadow_line}")
+        parts.append(block("Теневые сделки", esc(shadow_line)))
     if xstream:
-        lines.append(f"Поток X: {xstream}")
-    return "\n".join(lines)
+        parts.append(block("Поток X", esc(xstream)))
+    return "\n\n".join(parts)
