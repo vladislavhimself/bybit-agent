@@ -4,7 +4,7 @@
 import argparse
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -16,19 +16,21 @@ from bot.config import DATA  # noqa: E402
 ISS = "https://iss.moex.com/iss"
 
 
-def board(ticker):
-    if ticker.endswith("F") and ticker not in ("AFLT",) or len(ticker) == 4 and ticker[-2:].isalnum() and ticker[2].isalpha() and ticker[3].isdigit():
-        pass
-    return None
-
 
 def fetch(ticker, interval, days, futures=False):
     url = (f"{ISS}/engines/futures/markets/forts/boards/RFUD/securities/{ticker}/candles.json" if futures
            else f"{ISS}/engines/stock/markets/shares/boards/TQBR/securities/{ticker}/candles.json")
-    start = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+    start = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
     frames, begin = [], 0
     while True:
-        r = requests.get(url, params={"interval": interval, "from": start, "start": begin, "iss.meta": "off"}, timeout=30).json()
+        for attempt in range(5):  # ISS иногда рвёт соединение: повторяем с паузой
+            try:
+                r = requests.get(url, params={"interval": interval, "from": start, "start": begin, "iss.meta": "off"}, timeout=30).json()
+                break
+            except Exception as e:
+                if attempt == 4:
+                    raise
+                time.sleep(2 * (attempt + 1))
         cols, rows = r["candles"]["columns"], r["candles"]["data"]
         if not rows:
             break
