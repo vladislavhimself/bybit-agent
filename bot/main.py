@@ -16,7 +16,7 @@ from logging.handlers import RotatingFileHandler
 
 from .analyst import Analyst
 from .calendar import Calendar
-from .config import LOGS, MARKET_FILE, Settings
+from .config import LOGS, MARKET_FILE, Settings, ROOT
 from .exchange import Exchange
 from .moex import MoexExchange
 from . import fmt
@@ -442,8 +442,36 @@ class Bot:
                 f, bw = self.last_funnel
                 self.tg.send("Последний скан, почему нет входа:\n"
                              + fmt.funnel_text(f, bw, self.s.get("signals.entry_threshold"), top=8))
+            elif c == "/log":
+                # последние строки журнала: нужны, когда к машине нет доступа по SSH
+                try:
+                    lines = (LOGS / "bot.log").read_text(encoding="utf-8", errors="replace").splitlines()
+                    tail = [l for l in lines if "news: tg" not in l][-25:]
+                    self.tg.send("Последние записи лога:\n" + "\n".join(l[11:200] for l in tail))
+                except Exception as e:  # noqa: BLE001
+                    self.tg.send(f"Лог недоступен: {e}")
+            elif c == "/update":
+                # обновление кода из GitHub и перезапуск (цикл run.ps1 / systemd поднимет процесс заново)
+                import subprocess
+                try:
+                    out = subprocess.run(["git", "pull", "--ff-only"], cwd=str(ROOT), capture_output=True, text=True, timeout=120)
+                    msg = (out.stdout + out.stderr).strip()[-600:]
+                    if out.returncode != 0:
+                        self.tg.send(f"Обновление не удалось:\n{msg}")
+                    elif "Already up to date" in msg or "Уже обновлено" in msg:
+                        self.tg.send("Уже последняя версия, перезапуск не нужен")
+                    else:
+                        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", str(ROOT / "requirements.txt")],
+                                       cwd=str(ROOT), capture_output=True, timeout=600)
+                        n = self.exe.cancel_pendings("обновление")
+                        self.tg.send(f"Обновлено:\n{msg}\nОтменено ожидающих ордеров: {n}. Перезапуск через несколько секунд.")
+                        log.info("Обновление кода, перезапуск")
+                        time.sleep(2)
+                        os._exit(3)
+                except Exception as e:  # noqa: BLE001
+                    self.tg.send(f"Обновление не удалось: {e}")
             elif c == "/help":
-                self.tg.send("/status /why /shadow /market /stop /panic /resume /review /approve /lessons /calendar")
+                self.tg.send("/status /why /shadow /market /stop /panic /resume /review /approve /lessons /calendar /log /update")
 
     def _auto_apply(self):
         return bool(self.s.get("learning.auto_apply")) and self.s.mode != "live"
