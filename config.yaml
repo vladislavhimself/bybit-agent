@@ -187,10 +187,23 @@ markets:
         finmarket: "https://www.finmarket.ru/rss/mainnews.asp"
         smartlab: "https://smart-lab.ru/rss/"
         cbr: "https://www.cbr.ru/rss/RssPress"
-        moex: "https://www.moex.com/export/news.aspx?cat=100"
+        moex: "https://www.moex.com/export/news.aspx"
         forbes: "https://www.forbes.ru/newrss.xml"
         lenta_econ: "https://lenta.ru/rss/news/economics"
         frankmedia: "https://frankmedia.ru/feed"
+        # корпоративные и отраслевые ленты: отчёты, дивиденды, сделки, санкции
+        finam: "https://www.finam.ru/analysis/conews/rsspoint/"
+        interfax_econ: "https://www.interfax.ru/rss.asp?sec=economy"
+        interfax_biz: "https://www.interfax.ru/rss.asp?sec=business"
+        kommersant_econ: "https://www.kommersant.ru/RSS/section-economics.xml"
+        kommersant_fin: "https://www.kommersant.ru/RSS/section-finance.xml"
+        vedomosti_fin: "https://www.vedomosti.ru/rss/rubric/finance"
+        vedomosti_biz: "https://www.vedomosti.ru/rss/rubric/business"
+        tass_econ: "https://tass.ru/rss/v2.xml?sections=MjU%3D"
+        cbr_events: "https://www.cbr.ru/rss/eventrss"
+        gazeta_biz: "https://www.gazeta.ru/export/rss/business.xml"
+        ria: "https://ria.ru/export/rss2/archive/index.xml"
+        izvestia: "https://iz.ru/xml/rss/all.xml"
     risk:
       capital_cap_usd: 100000           # рублей: торговый капитал бота в песочнице (ГО одного фьючерса на Сбер около 5 500)
       max_single_lot_risk_pct: 1.5      # если расчётный объём меньше лота, берём 1 лот, когда его риск не больше 1.5% капитала
@@ -211,7 +224,7 @@ markets:
         - {date: "2026-11-05", time: "19:00", tz: "Europe/Moscow", title: "Росстат: недельная инфляция", impact: medium}
         - {date: "2026-11-11", time: "19:00", tz: "Europe/Moscow", title: "Росстат: недельная инфляция", impact: medium}
     llm:
-      cheap_sources: [lenta_econ, forbes, smartlab, "tg:profitgate", "tg:MarketOverview", "tg:investingcorp",
+      cheap_sources: [lenta_econ, forbes, smartlab, gazeta_biz, ria, izvestia, tass_econ, "tg:profitgate", "tg:MarketOverview", "tg:investingcorp",
                       "tg:divonline", "tg:selfinvestor", "tg:bitkogan", "tg:truecon", "tg:headlines_for_traders"]
       market_notes: |
         Рынок: Московская биржа, акции и фьючерсы в рублях, торговля на часы. В affected_symbols указывай тикеры
