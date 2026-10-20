@@ -353,9 +353,16 @@ class Executor:
         """(pnl, exit, fees) по данным биржи за время жизни сделки, с повторами. None, если биржа не ответила.
         pnl уже за вычетом комиссий (и Bybit, и T-Invest считают так)."""
         since = t["opened_ts"] * 1000 - 60000
+        price_based = getattr(self.ex, "price_based_pnl", False)
+        if price_based:
+            # лимитка могла исполниться раньше, чем бот это заметил: окно шире, результат по ценам входа/выхода
+            since = t["opened_ts"] * 1000 - 30 * 60000
         for attempt in range(4):
             try:
-                rows = [x for x in self.ex.closed_pnl(t["symbol"], start_ms=since) if x["ts"] >= since]
+                if price_based:
+                    rows = [x for x in self.ex.closed_pnl(t["symbol"], start_ms=since, entry=t["entry"], side=t["side"]) if x["ts"] >= since]
+                else:
+                    rows = [x for x in self.ex.closed_pnl(t["symbol"], start_ms=since) if x["ts"] >= since]
                 if rows:
                     return sum(x["pnl"] for x in rows), rows[0]["exit"], sum(x.get("fees") or 0 for x in rows)
                 if attempt >= 1:
@@ -390,8 +397,8 @@ class Executor:
             if res is not None:
                 pnl, exit_price, _fees = res
                 self.j.update_pnl(t["id"], exit_price, pnl, t["close_reason"].split(" (результат")[0])
-                log.info("%s: результат уточнён: %+.2f USDT", t["symbol"], pnl)
-                self.tg.send(f"ℹ️ Уточнение по {fmt.base_of(t['symbol'])}: результат {pnl:+.2f} USDT")
+                log.info("%s: результат уточнён: %+.2f %s", t["symbol"], pnl, fmt.CUR)
+                self.tg.send(f"ℹ️ Уточнение по {fmt.base_of(t['symbol'])}: результат {pnl:+.2f} {fmt.CUR}")
 
     def close_all(self, reason):
         n = self.cancel_pendings(reason)

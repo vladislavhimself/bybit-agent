@@ -9,6 +9,8 @@ import math
 import time
 from datetime import datetime, timezone
 
+from . import fmt
+
 log = logging.getLogger("risk")
 
 
@@ -98,7 +100,7 @@ class RiskManager:
             self.peak = max(self.peak - locked_now, t)
             self.day_start -= locked_now
             self.week_start -= locked_now
-            log.info("В резерв отложено %.2f USDT, резерв %.2f, торговый капитал %.2f", locked_now, self.reserve, t)
+            log.info("В резерв отложено %.2f %s, резерв %.2f, торговый капитал %.2f", locked_now, fmt.CUR, self.reserve, t)
 
         if t > self.peak:
             self.peak = t
@@ -110,7 +112,7 @@ class RiskManager:
         if self.halted:
             return False, self.halt_reason
         if dd >= r["kill_switch_drawdown_pct"]:
-            self.halt(f"торговый капитал просел на {dd:.1f}% от пика {self.peak:.0f} USDT (порог "
+            self.halt(f"торговый капитал просел на {dd:.1f}% от пика {self.peak:.0f} {fmt.CUR} (порог "
                       f"{r['kill_switch_drawdown_pct']}%), новые сделки остановлены")
             return False, self.halt_reason
         if day_loss >= r["daily_loss_limit_pct"]:
@@ -168,7 +170,7 @@ class RiskManager:
             cap = t * r.get("max_direction_risk_pct", 2.5) / 100
             if risk_now + new_risk > cap:
                 self.last_reject = "direction_risk"
-                return False, (f"риск по направлению {risk_now + new_risk:.2f} USDT превысит лимит {cap:.2f} "
+                return False, (f"риск по направлению {risk_now + new_risk:.2f} {fmt.CUR} превысит лимит {cap:.2f} "
                                f"({r.get('max_direction_risk_pct', 2.5)}% капитала)")
         if event_key:
             n_ev = sum(1 for x in open_trades if (x.get("event_key") or "") == event_key)

@@ -461,7 +461,7 @@ class Bot:
         mode = {"demo": "demo-счёт, виртуальные деньги", "testnet": "testnet", "live": "РЕАЛЬНЫЕ ДЕНЬГИ"}[self.s.mode]
         mk = {"crypto": "крипта, Bybit", "moex": "Мосбиржа, T-Invest"}.get(self.market, self.market)
         self.tg.send(f"🤖 Бот запущен: {mk} ({mode}{', dry-run: сделки не открываются, только сигналы' if self.dry else ''})\n"
-                     f"Торговый капитал {m['tradable']:.0f} USDT, резерв {m['reserve']:.0f}, весь счёт {equity:.0f} USDT\n"
+                     f"Торговый капитал {m['tradable']:.0f} {fmt.CUR}, резерв {m['reserve']:.0f}, весь счёт {equity:.0f} {fmt.CUR}\n"
                      f"Аналитик {'включён' if self.analyst else 'ВЫКЛЮЧЕН (нет ANTHROPIC_API_KEY)'}; "
                      f"новости: {len(self.news.tg_channels)} Telegram-каналов, RSS, анонсы бирж{', поток X' if x_on else ''}")
         while True:

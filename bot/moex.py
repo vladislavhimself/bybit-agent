@@ -58,6 +58,7 @@ class MoexExchange:
         self._uid2sym = {}
         self._figi2sym = {}
         self._turn_cache, self._turn_ts, self._iss_down_until, self._turn_thread = {}, 0.0, 0.0, None
+        self._realized, self._realized_ts = 0.0, 0.0
         self._ensure_account()
         threading.Thread(target=self._keepalive, daemon=True, name="tinvest-keepalive").start()
 
@@ -372,12 +373,54 @@ class MoexExchange:
             return False
 
     # ---------- счёт ----------
+    price_based_pnl = True   # результат сделки считаем по ценам входа и выхода, а не по платежам брокера
+
     def balances(self):
-        p = self.call("OperationsService", "GetPortfolio", {"accountId": self.account})
-        total = q2f(p.get("totalAmountPortfolio"))
-        upnl = sum(q2f(x.get("expectedYield")) for x in p.get("positions", []) if x.get("instrumentType") != "currency")
-        cash = sum(q2f(x.get("quantity")) for x in p.get("positions", []) if x.get("instrumentType") == "currency")
-        return {"equity": total, "wallet": total - upnl, "unrealised": upnl, "available": cash, "total_equity": total}
+        """Капитал = деньги + акции + вариационная маржа открытых фьючерсов (+ в песочнице реализованный результат
+        по фьючерсам, потому что песочница не проводит клиринг: деньги меняются только на комиссии).
+        totalAmountPortfolio не годится: в нём фьючерсы учтены по полной стоимости контракта."""
+        inst = self.instruments()   # заполняет карты figi/uid -> тикер до их использования
+        p = self.call("OperationsService", "GetPortfolio", {"accountId": self.account, "currency": "RUB"})
+        cash = shares_upnl = fut_upnl = 0.0
+        for x in p.get("positions", []):
+            kind = x.get("instrumentType")
+            if kind == "currency":
+                cash += q2f(x.get("quantity"))
+            elif kind == "futures":
+                if x.get("varMargin") is not None:
+                    fut_upnl += q2f(x.get("varMargin"))
+                else:
+                    sym = self._figi2sym.get(x.get("figi")) or self._uid2sym.get(x.get("instrumentUid"))
+                    mult = inst[sym]["mult"] if sym in inst else 1.0
+                    fut_upnl += (q2f(x.get("currentPrice")) - q2f(x.get("averagePositionPrice"))) * q2f(x.get("quantity")) * mult
+            else:
+                shares_upnl += q2f(x.get("expectedYield"))
+        shares = q2f(p.get("totalAmountShares")) + q2f(p.get("totalAmountEtf")) + q2f(p.get("totalAmountBonds"))
+        realized = self._realized_futures(p) if self.mode != "live" else 0.0
+        equity = cash + shares + fut_upnl + realized
+        upnl = fut_upnl + shares_upnl
+        return {"equity": equity, "wallet": equity - upnl, "unrealised": upnl, "available": cash, "total_equity": equity}
+
+    def _realized_futures(self, portfolio):
+        """Песочница: сумма платежей по сделкам с фьючерсами плюс стоимость открытых контрактов по цене входа
+        = реализованный результат, который настоящий брокер провёл бы по деньгам при клиринге. Кэш 60 с."""
+        now = time.time()
+        if now - self._realized_ts < 60:
+            return self._realized
+        inst = self.instruments()
+        r = self.call("OperationsService", "GetOperations", {"accountId": self.account, "from": "2026-10-01T00:00:00Z",
+                                                              "to": iso(now + 60), "state": "OPERATION_STATE_EXECUTED"})
+        total = 0.0
+        for op in r.get("operations", []):
+            if op.get("instrumentType") == "futures" and op.get("operationType") in ("OPERATION_TYPE_BUY", "OPERATION_TYPE_SELL"):
+                total += q2f(op.get("payment"))
+        for x in portfolio.get("positions", []):
+            if x.get("instrumentType") == "futures":
+                sym = self._figi2sym.get(x.get("figi")) or self._uid2sym.get(x.get("instrumentUid"))
+                mult = inst[sym]["mult"] if sym in inst else 1.0
+                total += q2f(x.get("quantity")) * q2f(x.get("averagePositionPrice")) * mult
+        self._realized, self._realized_ts = total, now
+        return total
 
     def equity(self):
         b = self.balances()
@@ -526,28 +569,38 @@ class MoexExchange:
                 return self.place_market(symbol, side, p["qty"], reduce_only=True)
         return None
 
-    def closed_pnl(self, symbol=None, start_ms=None, limit=50):
-        """Результат по инструменту с момента start_ms из операций: продажи − покупки − комиссии (в рублях).
-        Возвращает одну запись на инструмент, pnl уже с учётом комиссии."""
+    def closed_pnl(self, symbol=None, start_ms=None, limit=50, entry=None, side=None):
+        """Результат по инструменту с момента start_ms, в рублях, уже с учётом комиссии.
+        Если переданы entry и side сделки: pnl = сумма по закрывающим сделкам (цена − вход) × лоты × шаг − комиссии.
+        Иначе (разведка): продажи − покупки − комиссии по платежам брокера за период."""
         start = int(start_ms / 1000) if start_ms else int(time.time()) - 7 * 86400
         r = self.call("OperationsService", "GetOperations", {"accountId": self.account, "from": iso(start),
                                                               "to": iso(time.time() + 60), "state": "OPERATION_STATE_EXECUTED"})
+        closing = "OPERATION_TYPE_SELL" if side == "Buy" else "OPERATION_TYPE_BUY"
         by = {}
         for op in r.get("operations", []):
             sym = self._figi2sym.get(op.get("figi")) or self._uid2sym.get(op.get("instrumentUid"))
             if not sym or (symbol and sym != symbol):
                 continue
-            d = by.setdefault(sym, {"symbol": sym, "pnl": 0.0, "fees": 0.0, "exit": 0.0, "ts": 0, "side": "", "qty": 0.0, "entry": 0.0})
+            d = by.setdefault(sym, {"symbol": sym, "pnl": 0.0, "fees": 0.0, "exit": 0.0, "ts": 0, "side": "", "qty": 0.0, "entry": entry or 0.0})
             pay = q2f(op.get("payment"))
             typ = op.get("operationType", "")
             if typ == "OPERATION_TYPE_BROKER_FEE" or "FEE" in typ or "COMMISSION" in typ:
                 d["fees"] += -pay
-            d["pnl"] += pay
+                d["pnl"] += pay
+            elif entry is None:
+                d["pnl"] += pay
             ts = int(datetime.strptime(op["date"][:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).timestamp() * 1000)
-            if typ in ("OPERATION_TYPE_BUY", "OPERATION_TYPE_SELL") and ts >= d["ts"]:
-                d["ts"], d["exit"] = ts, q2f(op.get("price"))
-                d["side"] = "Sell" if typ == "OPERATION_TYPE_SELL" else "Buy"
-                d["qty"] = float(op.get("quantity") or 0)
+            if typ in ("OPERATION_TYPE_BUY", "OPERATION_TYPE_SELL"):
+                price, qty = q2f(op.get("price")), float(op.get("quantity") or 0)
+                if entry is not None and typ == closing:
+                    d["pnl"] += (price - entry) * qty * self.mult(sym) * (1 if side == "Buy" else -1)
+                    d["qty"] += qty
+                if (entry is None or typ == closing) and ts >= d["ts"]:
+                    d["ts"], d["exit"] = ts, price
+                    d["side"] = "Sell" if typ == "OPERATION_TYPE_SELL" else "Buy"
+                    if entry is None:
+                        d["qty"] = qty
         return [d for d in by.values() if d["ts"]]
 
     # ---------- округления ----------
