@@ -59,18 +59,30 @@ class MoexExchange:
         self._figi2sym = {}
         self._turn_cache, self._turn_ts, self._iss_down_until, self._turn_thread = {}, 0.0, 0.0, None
         self._ensure_account()
+        threading.Thread(target=self._keepalive, daemon=True, name="tinvest-keepalive").start()
+
+    def _keepalive(self):
+        """Держим соединение с API тёплым: новое соединение с сервера устанавливается с нескольких попыток."""
+        while True:
+            time.sleep(15)
+            try:
+                self.http.get(self.url, timeout=(3, 10), verify=CA_BUNDLE)
+            except requests.RequestException:
+                pass
 
     # ---------- низкоуровневое ----------
-    def call(self, svc, method, body=None, retries=3):
+    def call(self, svc, method, body=None, retries=8):
+        # С иностранного IP T-Bank отбрасывает около половины новых TCP-соединений, а установленное живёт долго:
+        # короткий таймаут на подключение, много быстрых повторов, keep-alive через общую сессию.
         for attempt in range(retries):
             try:
-                r = self.http.post(self.url + svc + "/" + method, headers=self.h, json=body or {}, timeout=30,
+                r = self.http.post(self.url + svc + "/" + method, headers=self.h, json=body or {}, timeout=(3, 30),
                                    verify=CA_BUNDLE)
             except requests.RequestException as e:
                 if attempt == retries - 1:
                     raise
-                log.warning("%s.%s: %s, повтор", svc, method, e)
-                time.sleep(1 + attempt)
+                (log.debug if isinstance(e, requests.ConnectTimeout) else log.warning)("%s.%s: %s, повтор", svc, method, e)
+                time.sleep(0.3)
                 continue
             if r.status_code == 429:
                 time.sleep(2 + attempt * 2)
