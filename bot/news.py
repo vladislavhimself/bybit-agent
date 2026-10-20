@@ -13,6 +13,8 @@ from email.utils import parsedate_to_datetime
 import feedparser
 import requests
 
+from . import net
+
 log = logging.getLogger("news")
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36"}
 
@@ -110,7 +112,8 @@ class NewsCollector:
         items = []
         for name, url in (self.s.get("sources.rss") or RSS_SOURCES).items():
             try:
-                feed = feedparser.parse(url, request_headers=UA)
+                r = self.session.get(url, timeout=15, proxies=net.proxies_for(url))   # российские ленты через ретранслятор
+                feed = feedparser.parse(r.content)
                 for e in feed.entries:
                     ts = _rss_ts(e)
                     if now - ts > self.max_age:

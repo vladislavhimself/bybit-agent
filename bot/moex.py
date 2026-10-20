@@ -14,6 +14,8 @@ from pathlib import Path
 import pandas as pd
 import requests
 
+from . import net
+
 log = logging.getLogger("moex")
 ROOT = Path(__file__).resolve().parent.parent
 CA_BUNDLE = str(ROOT / "certs" / "ca_bundle.pem")
@@ -52,6 +54,8 @@ class MoexExchange:
         self.url = host + "/rest/" + PKG
         self.h = {"Authorization": f"Bearer {tok}", "Content-Type": "application/json", "Accept": "application/json"}
         self.http = requests.Session()
+        self.http.trust_env = False   # переменные *_PROXY окружения не трогаем
+        self.http.proxies = net.proxies_for("https://invest-public-api.tbank.ru")   # RU_PROXY: ретранслятор в России
         self.account = None
         self._inst = {}
         self._inst_ts = 0.0
