@@ -195,23 +195,39 @@ class RiskManager:
         if dist <= 0 or price <= 0:
             return None, "нулевое расстояние до стопа"
         stop_pct = dist / price
-        qty = risk_amt / dist
-        notional = qty * price
+        mult = float(inst.get("mult") or 1.0)   # рублей/долларов за 1 пункт цены на 1 лот
+        qty = risk_amt / (dist * mult)
+        notional = qty * price * mult
 
-        exposure = sum(p["qty"] * p["mark"] for p in positions)
+        exposure = sum(p["qty"] * p["mark"] * float(self.ex.instruments().get(p["symbol"], {}).get("mult") or 1.0)
+                       for p in positions)
         cap = max(0.0, t * r["max_total_exposure_x"] - exposure)
         cap = min(cap, t * r["max_total_exposure_x"] / 2)
         if notional > cap:
-            qty, notional = cap / price, cap
+            qty, notional = cap / (price * mult), cap
         if notional <= 0:
             return None, "нет свободного лимита экспозиции"
+        # фьючерсы Мосбиржи: гарантийное обеспечение не должно съесть весь торговый капитал
+        if hasattr(self.ex, "margin_per_lot") and inst.get("kind") == "future":
+            m = self.ex.margin_per_lot(symbol, "Buy" if stop < price else "Sell")
+            if m:
+                max_lots = int(t * r.get("max_margin_share", 0.6) / m)
+                if max_lots < 1:
+                    return None, f"ГО одного контракта {m:.0f} больше {r.get('max_margin_share', 0.6) * 100:.0f}% капитала"
+                qty = min(qty, max_lots)
+                notional = qty * price * mult
 
         # Плечо: ликвидация должна быть минимум вдвое дальше стопа
         lev = math.ceil(notional / t) + 1
         max_lev_by_stop = math.floor(0.9 / (stop_pct * 2)) if stop_pct > 0 else r["max_leverage"]
         lev = int(max(1, min(lev, r["max_leverage"], inst["max_leverage"], max(1, max_lev_by_stop))))
         if notional / t > lev:
-            qty = lev * t / price * 0.98
+            qty = lev * t / (price * mult) * 0.98
         if not self.ex.qty_ok(symbol, qty, price):
-            return None, f"объём ниже минимального (qty={qty:.6f})"
+            # целые лоты (Мосбиржа): берём 1 лот, если его риск не больше max_single_lot_risk_pct капитала
+            one_lot_risk = dist * mult * float(inst.get("lot_min", 1) or 1)
+            hard = t * r.get("max_single_lot_risk_pct", 0) / 100
+            if inst.get("qty_step") == 1 and hard and one_lot_risk <= hard and self.ex.qty_ok(symbol, 1, price):
+                return 1.0, lev
+            return None, f"объём ниже минимального (qty={qty:.6f}, риск одного лота {one_lot_risk:.0f})"
         return float(self.ex.fmt_qty(symbol, qty)), lev

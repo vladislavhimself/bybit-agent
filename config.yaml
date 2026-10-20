@@ -1,3 +1,8 @@
+# Активный рынок по умолчанию: crypto (Bybit) или moex (Мосбиржа через T-Invest).
+# Переключение на лету командой /market в Telegram: выбор хранится в data/market.txt и переживает перезапуск.
+market: crypto
+currency: USDT
+
 # Все проценты указаны в процентах от торгового капитала (equity минус защищённый резерв прибыли)
 
 quote: USDT
@@ -142,3 +147,78 @@ llm:
 learning:
   enabled: true
   auto_apply: true               # на demo/testnet правки параметров применяются сами; на live только после /approve
+
+
+# ===================== Мосбиржа: накладывается на общие настройки, когда активен рынок moex =====================
+markets:
+  moex:
+    currency: RUB
+    universe:
+      top_n_by_turnover: 25
+      min_turnover_24h_usd: 300000000   # здесь это рубли: оборот акции за день; фьючерсам достаточно 30% от этого
+      always: [SBERF, GAZPF, IMOEXF]    # вечные фьючерсы: без экспирации, торгуются вечером и в выходные
+      blacklist: []
+    moex:
+      sandbox_start_rub: 100000         # пополнение песочницы при первом запуске
+      prefer: futures                   # на один базовый актив один инструмент: вечный фьючерс > квартальный > акция
+      min_days_to_expiry: 20            # квартальные контракты ближе к экспирации не берём
+      futures_turnover_mult: 0.3
+      big_trade_rub_share: 2000000      # «кит»: сделка от 2 млн руб по акции, от 3 млн по фьючерсу
+      big_trade_rub_future: 1000000
+      allowed_future_bases: [IMOEX, RTS]   # индексные фьючерсы; остальные фьючерсы только на акции
+      trading_hours: [["07:05", "23:30"]]   # московское время; аукцион открытия и последние минуты не трогаем
+    sources:
+      exchange_announcements: false
+      twitter_mode: "off"
+      whale_channels: []
+      truthsocial_accounts: {realDonaldTrump: "107780257626128497"}
+      telegram_channels: [markettwits, cbrstocks, if_market_news, AK47pfl, bcs_express, tb_invest_official,
+                          russianmacro, divonline, investingcorp, rbc_news, selfinvestor, prime1, interfaxonline,
+                          tass_agency, kommersant, vedomosti, banksta, centralbank_russia, minfin, smartlabnews,
+                          alfa_investments, sberinvestments, headlines_for_traders, profitgate, MarketOverview,
+                          bitkogan, truecon, realdonaldtrump_truth, TrumpTruthPosts, whitehouse]
+      rss:
+        interfax: "https://www.interfax.ru/rss.asp"
+        rbc: "https://rssexport.rbc.ru/rbcnews/news/30/full.rss"
+        kommersant: "https://www.kommersant.ru/RSS/news.xml"
+        tass: "https://tass.ru/rss/v2.xml"
+        vedomosti: "https://www.vedomosti.ru/rss/news"
+        prime: "https://1prime.ru/export/rss2/index.xml"
+        finmarket: "https://www.finmarket.ru/rss/mainnews.asp"
+        smartlab: "https://smart-lab.ru/rss/"
+        cbr: "https://www.cbr.ru/rss/RssPress"
+        moex: "https://www.moex.com/export/news.aspx?cat=100"
+        forbes: "https://www.forbes.ru/newrss.xml"
+        lenta_econ: "https://lenta.ru/rss/news/economics"
+        frankmedia: "https://frankmedia.ru/feed"
+    risk:
+      capital_cap_usd: 100000           # рублей: торговый капитал бота в песочнице (ГО одного фьючерса на Сбер около 5 500)
+      max_single_lot_risk_pct: 1.5      # если расчётный объём меньше лота, берём 1 лот, когда его риск не больше 1.5% капитала
+      min_notional_usd: 500
+      max_leverage: 6
+      max_margin_share: 0.6             # гарантийное обеспечение всех контрактов не больше 60% капитала
+      weekend_risk_mult: 0.5            # торги в выходные тонкие
+      soft_stops: true                  # программный стоп в дополнение к стоп-заявке брокера
+    signals:
+      use_playbook: false               # статистика по BTC к акциям не относится
+    calendar:
+      us_macro: true
+      fixed_events:
+        - {date: "2026-10-23", time: "13:30", tz: "Europe/Moscow", title: "ЦБ РФ: решение по ключевой ставке", impact: high}
+        - {date: "2026-12-18", time: "13:30", tz: "Europe/Moscow", title: "ЦБ РФ: решение по ключевой ставке", impact: high}
+        - {date: "2026-10-21", time: "19:00", tz: "Europe/Moscow", title: "Росстат: недельная инфляция", impact: medium}
+        - {date: "2026-10-28", time: "19:00", tz: "Europe/Moscow", title: "Росстат: недельная инфляция", impact: medium}
+        - {date: "2026-11-05", time: "19:00", tz: "Europe/Moscow", title: "Росстат: недельная инфляция", impact: medium}
+        - {date: "2026-11-11", time: "19:00", tz: "Europe/Moscow", title: "Росстат: недельная инфляция", impact: medium}
+    llm:
+      cheap_sources: [lenta_econ, forbes, smartlab, "tg:profitgate", "tg:MarketOverview", "tg:investingcorp",
+                      "tg:divonline", "tg:selfinvestor", "tg:bitkogan", "tg:truecon", "tg:headlines_for_traders"]
+      market_notes: |
+        Рынок: Московская биржа, акции и фьючерсы в рублях, торговля на часы. В affected_symbols указывай тикеры
+        Мосбиржи (SBER, GAZP, LKOH, ROSN, NVTK, GMKN, YDEX, TATN, VTBR, MGNT, PLZL, CHMF, NLMK, MTSS, ALRS, MOEX,
+        OZON, T, AFLT, SNGS, X5, RUAL, PIKK, SMLT, NMTP, FLOT, IRAO, FEES, HYDR, UPRO, PHOR). Новость про индекс
+        или весь рынок: market_wide = true. Что двигает рынок: ключевая ставка и риторика ЦБ (macro), недельная
+        инфляция (macro), санкции и переговоры (regulation), курс рубля и нефть (macro), дивиденды и отсечки
+        (earnings: рекомендация выше ожиданий = bullish, отказ от дивидендов = bearish), отчёты (earnings),
+        байбэки и сделки инсайдеров (whale), допэмиссии и SPO (bearish, collapse), ESG и прочее = other.
+        Розничные инвесторы доминируют: на громкой новости движение с перебором, затем откат.

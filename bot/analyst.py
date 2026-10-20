@@ -120,6 +120,7 @@ class Analyst:
         self.model = settings.get("llm.model")
         self.cheap = settings.get("llm.cheap_model")
         self.budget = float(settings.get("llm.daily_budget_usd") or 0)
+        self.market_notes = settings.get("llm.market_notes") or ""
         self.cost = CostTracker(journal)
         self._budget_warned = False
 
@@ -152,7 +153,9 @@ class Analyst:
 
     def _context(self):
         parts = []
-        if self.playbook:
+        if self.market_notes:
+            parts.append(self.market_notes)
+        if self.playbook and self.s.get("signals.use_playbook", True):
             pb = self.playbook.text()
             if pb:
                 parts.append(pb)

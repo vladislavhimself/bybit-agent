@@ -108,7 +108,7 @@ class NewsCollector:
 
     def _rss(self, now):
         items = []
-        for name, url in RSS_SOURCES.items():
+        for name, url in (self.s.get("sources.rss") or RSS_SOURCES).items():
             try:
                 feed = feedparser.parse(url, request_headers=UA)
                 for e in feed.entries:
@@ -254,12 +254,13 @@ class NewsCollector:
         if now - self.last["twitter"] >= self.s.get("sources.twitter_poll_sec", 120):
             self.last["twitter"] = now
             items += self._twitter(now)
-        if now - self.last["binance"] >= 60:
-            self.last["binance"] = now
-            items += self._binance(now)
-        if now - self.last["bybit"] >= 60:
-            self.last["bybit"] = now
-            items += self._bybit(now)
+        if self.s.get("sources.exchange_announcements", True):
+            if now - self.last["binance"] >= 60:
+                self.last["binance"] = now
+                items += self._binance(now)
+            if now - self.last["bybit"] >= 60:
+                self.last["bybit"] = now
+                items += self._bybit(now)
         if now - self.last["rss"] >= 60:
             self.last["rss"] = now
             items += self._rss(now)

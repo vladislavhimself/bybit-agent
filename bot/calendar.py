@@ -25,7 +25,8 @@ HIGH_KEYWORDS = ("CPI", "FOMC", "Federal Funds", "Non-Farm", "Nonfarm", "Unemplo
 
 
 class Calendar:
-    def __init__(self, refresh_sec=3600):
+    def __init__(self, refresh_sec=3600, settings=None):
+        self.s = settings
         self.events = []        # {ts, title, impact: high|medium|low, kind: macro|crypto|fomc, source}
         self.refresh_sec = refresh_sec
         self.last = 0.0
@@ -35,11 +36,23 @@ class Calendar:
             return
         self.last = time.time()
         ev = []
-        for day in FOMC_DECISION_DAYS:
+        for e in ((self.s.get("calendar.fixed_events") if self.s else None) or []):
+            try:
+                dt = datetime.strptime(f"{e['date']} {e.get('time', '12:00')}", "%Y-%m-%d %H:%M").replace(
+                    tzinfo=ZoneInfo(e.get("tz", "UTC")))
+                ev.append({"ts": int(dt.timestamp()), "title": e["title"], "impact": e.get("impact", "high"),
+                           "kind": e.get("kind", "macro"), "source": "config"})
+            except (KeyError, ValueError) as ex:
+                log.warning("calendar.fixed_events: %s", ex)
+        if (self.s.get("calendar.us_macro", True) if self.s else True):
+            fomc_days = FOMC_DECISION_DAYS
+        else:
+            fomc_days = []
+        for day in fomc_days:
             dt = datetime.strptime(day + " 14:00", "%Y-%m-%d %H:%M").replace(tzinfo=NY)
             ev.append({"ts": int(dt.timestamp()), "title": "FOMC: решение по ставке", "impact": "high",
                        "kind": "fomc", "source": "fed"})
-        for url in (FF_URL, FF_NEXT_URL):
+        for url in ((FF_URL, FF_NEXT_URL) if (self.s.get("calendar.us_macro", True) if self.s else True) else ()):
             try:
                 r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
                 if r.status_code != 200:

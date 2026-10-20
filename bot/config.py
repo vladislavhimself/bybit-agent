@@ -52,11 +52,41 @@ def _set(d, path, value):
     cur[parts[-1]] = value
 
 
+MARKET_FILE = DATA / "market.txt"
+
+
+def _deep_merge(dst, src):
+    for k, v in (src or {}).items():
+        if isinstance(v, dict) and isinstance(dst.get(k), dict):
+            _deep_merge(dst[k], v)
+        else:
+            dst[k] = copy.deepcopy(v)
+    return dst
+
+
+def active_market(default="crypto"):
+    """Активный рынок: data/market.txt (меняется командой /market), иначе переменная MARKET, иначе из config.yaml."""
+    try:
+        v = MARKET_FILE.read_text(encoding="utf-8").strip().lower()
+        if v:
+            return v
+    except OSError:
+        pass
+    return os.getenv("MARKET", "").strip().lower() or default
+
+
 class Settings:
     def __init__(self):
         with open(ROOT / "config.yaml", encoding="utf-8") as f:
             self.base = yaml.safe_load(f)
-        self.learned_path = DATA / "learned_params.json"
+        self.market = active_market(self.base.get("market", "crypto"))
+        if self.market != "crypto":
+            # настройки рынка накладываются на общие: универсум, источники, риск, валюта
+            _deep_merge(self.base, (self.base.get("markets") or {}).get(self.market) or {})
+        self.base["market"] = self.market
+        suffix = "" if self.market == "crypto" else f"_{self.market}"
+        self.db_path = DATA / f"bot{suffix}.db"
+        self.learned_path = DATA / f"learned_params{suffix}.json"
         self.learned = {}
         if self.learned_path.exists():
             try:
@@ -117,6 +147,9 @@ class Settings:
     @property
     def telegram_chat_id(self):
         return os.getenv("TELEGRAM_CHAT_ID", "").strip()
+
+    def tinvest_token(self, mode):
+        return os.getenv("TINVEST_TOKEN" if mode == "live" else "TINVEST_SANDBOX_TOKEN", "").strip()
 
     @property
     def has_anthropic(self):

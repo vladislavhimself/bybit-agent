@@ -59,7 +59,8 @@ class Journal:
                     self.db.execute(f"ALTER TABLE events ADD COLUMN {col} {typ}")
                 except sqlite3.OperationalError:
                     pass
-            for col, typ in (("event_key", "TEXT DEFAULT ''"), ("mfe_r", "REAL DEFAULT 0"), ("mfe_ts", "INTEGER DEFAULT 0")):
+            for col, typ in (("event_key", "TEXT DEFAULT ''"), ("mfe_r", "REAL DEFAULT 0"), ("mfe_ts", "INTEGER DEFAULT 0"),
+                             ("mult", "REAL DEFAULT 1"), ("fees", "REAL DEFAULT 0")):
                 try:
                     self.db.execute(f"ALTER TABLE trades ADD COLUMN {col} {typ}")
                 except sqlite3.OperationalError:
@@ -112,12 +113,12 @@ class Journal:
     def open_trade(self, t: dict) -> int:
         return self._run(
             "INSERT INTO trades(symbol,side,qty,entry,stop,tp,stop_init,tier,score,confidence,reasons,regime,atr,"
-            "leverage,opened_ts,status,order_id,news_driven,qty_init,tp_plan,tp_hits,event_key) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,0,?)",
+            "leverage,opened_ts,status,order_id,news_driven,qty_init,tp_plan,tp_hits,event_key,mult,fees) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?,?,?,0,?,?,?)",
             (t["symbol"], t["side"], t["qty"], t["entry"], t["stop"], t["tp"], t["stop"], t["tier"], t["score"],
              t["confidence"], json.dumps(t["reasons"], ensure_ascii=False), t["regime"], t["atr"], t["leverage"],
              int(time.time()), t.get("order_id", ""), int(t.get("news_driven", False)), t["qty"],
-             json.dumps(t.get("tp_plan", [])), t.get("event_key", "")))
+             json.dumps(t.get("tp_plan", [])), t.get("event_key", ""), float(t.get("mult", 1.0)), float(t.get("fees", 0.0))))
 
     # ---- отложенные входы (лимитные ордера на откат) ----
     def add_pending(self, p: dict) -> int:
@@ -138,7 +139,7 @@ class Journal:
 
     def update_pnl(self, trade_id, exit_price, pnl, reason=None):
         t = self._run("SELECT * FROM trades WHERE id=?", (trade_id,), "one")
-        risk = abs(t["entry"] - t["stop_init"]) * (t["qty_init"] or t["qty"])
+        risk = abs(t["entry"] - t["stop_init"]) * (t["qty_init"] or t["qty"]) * (t["mult"] or 1.0)
         pnl_r = pnl / risk if risk > 0 else 0.0
         self._run("UPDATE trades SET exit=?, pnl=?, pnl_r=?, close_reason=COALESCE(?, close_reason) WHERE id=?",
                   (exit_price, pnl, pnl_r, reason, trade_id))
@@ -196,12 +197,13 @@ class Journal:
     def update_partial(self, trade_id, qty, tp_hits):
         self._run("UPDATE trades SET qty=?, tp_hits=? WHERE id=?", (qty, tp_hits, trade_id))
 
-    def close_trade(self, trade_id, exit_price, pnl, reason):
+    def close_trade(self, trade_id, exit_price, pnl, reason, fees=None):
         t = self._run("SELECT * FROM trades WHERE id=?", (trade_id,), "one")
-        risk = abs(t["entry"] - t["stop_init"]) * (t["qty_init"] or t["qty"])
+        risk = abs(t["entry"] - t["stop_init"]) * (t["qty_init"] or t["qty"]) * (t["mult"] or 1.0)
         pnl_r = pnl / risk if risk > 0 else 0.0
-        self._run("UPDATE trades SET status='closed', closed_ts=?, exit=?, pnl=?, pnl_r=?, close_reason=? WHERE id=?",
-                  (int(time.time()), exit_price, pnl, pnl_r, reason, trade_id))
+        self._run("UPDATE trades SET status='closed', closed_ts=?, exit=?, pnl=?, pnl_r=?, close_reason=?, "
+                  "fees=COALESCE(?, fees) WHERE id=?",
+                  (int(time.time()), exit_price, pnl, pnl_r, reason, fees, trade_id))
 
     def closed_trades(self, limit=50):
         rows = self._run("SELECT * FROM trades WHERE status='closed' ORDER BY closed_ts DESC LIMIT ?", (limit,), "all")
@@ -221,7 +223,7 @@ class Journal:
         gross_loss = -sum(r["pnl"] for r in rows if r["pnl"] <= 0)
         return {
             "n": len(rows), "win_rate": round(len(wins) / len(rows) * 100, 1),
-            "pnl": round(sum(r["pnl"] for r in rows), 2),
+            "pnl": round(sum(r["pnl"] for r in rows), 2), "fees": round(sum(r.get("fees") or 0 for r in rows), 2),
             "avg_r": round(sum(r["pnl_r"] for r in rows) / len(rows), 2),
             "profit_factor": round(gross_win / gross_loss, 2) if gross_loss > 0 else float("inf"),
         }

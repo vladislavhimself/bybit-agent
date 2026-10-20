@@ -26,6 +26,9 @@ def funnel_text(counter, best_weak=None, threshold=None, top=5):
 TIER_RU = {"low": "малый", "medium": "средний", "high": "крупный", "conviction": "максимальный"}
 
 
+CUR = "USDT"   # валюта счёта, задаётся при старте из настроек
+
+
 def clean(text, limit=90):
     t = re.sub(r"[^\w\s$#%().,:;!?'\"/+\-–—]", "", text or "")
     t = " ".join(t.split())
@@ -59,30 +62,33 @@ def short_reasons(sig, ta=None, limit=3):
     return out[:limit]
 
 
-def entry_message(sig, entry, qty, lev, stop, plan, risk_pct, risk_usd, tradable, equity, ta=None, dry=False):
+def entry_message(sig, entry, qty, lev, stop, plan, risk_pct, risk_usd, tradable, equity, ta=None, dry=False,
+                  mult=1.0, fee=0.0):
     base = base_of(sig.symbol)
     side = "ЛОНГ" if sig.direction == "long" else "ШОРТ"
-    notional = qty * entry
+    notional = qty * entry * mult
     head = "🧪 СИГНАЛ (dry-run, сделка НЕ открыта)" if dry else "🟢 ВХОД"
     tps = " / ".join(f"{l['price']:g}" for l in plan) if plan else "нет, только трейлинг"
     lines = [
         f"{head}: {base}, {side}, размер {TIER_RU.get(sig.tier, sig.tier)}",
-        f"Вход {entry:g}, объём {qty:g} {base} (~{notional:.0f} USDT), плечо {lev}x",
-        f"Стоп {stop:g} (риск {risk_pct}% = {risk_usd:.2f} USDT), тейки {tps}",
+        f"Вход {entry:g}, объём {qty:g} {'лот.' if mult != 1.0 else base} (~{notional:.0f} {CUR}), плечо {lev}x"
+        + (f", комиссия входа {fee:.2f} {CUR}" if fee else ""),
+        f"Стоп {stop:g} (риск {risk_pct}% = {risk_usd:.2f} {CUR}), тейки {tps}",
         "Почему: " + "; ".join(short_reasons(sig, ta)),
-        f"Капитал: торговый {tradable:.0f} USDT, в сделке {notional / tradable * 100 if tradable else 0:.0f}%; "
-        f"весь счёт {equity:.0f} USDT",
+        f"Капитал: торговый {tradable:.0f} {CUR}, в сделке {notional / tradable * 100 if tradable else 0:.0f}%; "
+        f"весь счёт {equity:.0f} {CUR}",
     ]
     return "\n".join(lines)
 
 
-def close_message(t, pnl, pnl_r, reason, tradable=None):
+def close_message(t, pnl, pnl_r, reason, tradable=None, fees=None):
     base = base_of(t["symbol"])
     side = "ЛОНГ" if t["side"] == "Buy" else "ШОРТ"
     emoji = "✅" if pnl > 0 else "❌"
-    s = f"{emoji} ВЫХОД: {base}, {side}: {pnl:+.2f} USDT ({pnl_r:+.2f}R)\nПричина: {reason}"
+    fee_txt = f", уже с учётом комиссии {fees:.2f} {CUR}" if fees else " (с учётом комиссии)"
+    s = f"{emoji} ВЫХОД: {base}, {side}: {pnl:+.2f} {CUR} ({pnl_r:+.2f}R){fee_txt}\nПричина: {reason}"
     if tradable is not None:
-        s += f"\nТорговый капитал теперь {tradable:.2f} USDT"
+        s += f"\nТорговый капитал теперь {tradable:.2f} {CUR}"
     return s
 
 
@@ -90,10 +96,10 @@ def balance_message(equity, m, positions, stats, cap, llm=None, next_macro=None,
                     pendings=None, why_none=None, shadow_line=None):
     lines = ["💼 БАЛАНС"]
     if cap:
-        lines.append(f"Торговый капитал: {m['tradable']:.2f} USDT (лимит {cap:.0f}, прибыль с начала {m['tradable'] + m['reserve'] - cap:+.2f})")
+        lines.append(f"Торговый капитал: {m['tradable']:.2f} {CUR} (лимит {cap:.0f}, прибыль с начала {m['tradable'] + m['reserve'] - cap:+.2f})")
     else:
-        lines.append(f"Торговый капитал: {m['tradable']:.2f} USDT")
-    lines.append(f"Резерв прибыли: {m['reserve']:.2f} USDT | USDT на счёте: {equity:.0f}")
+        lines.append(f"Торговый капитал: {m['tradable']:.2f} {CUR}")
+    lines.append(f"Резерв прибыли: {m['reserve']:.2f} {CUR} | на счёте: {equity:.0f} {CUR}")
     lines.append(f"Сегодня {m['day_pct']:+.1f}% | неделя {m['week_pct']:+.1f}% | просадка от пика {m['drawdown_pct']:.1f}%")
     if m["halted"] and halted_hint:
         lines.append(f"⛔ Остановлен: {m['halt_reason']}. /resume чтобы продолжить")
@@ -104,13 +110,13 @@ def balance_message(equity, m, positions, stats, cap, llm=None, next_macro=None,
         lines.append("Позиции:")
         for p in positions:
             side = "ЛОНГ" if p["side"] == "Buy" else "ШОРТ"
-            lines.append(f"• {base_of(p['symbol'])} {side} {p['qty']:g} @ {p['entry']:g}, сейчас {p['upnl']:+.2f} USDT, "
-                         f"плечо {p['leverage']:.0f}x, стоп {p['sl']:g}")
+            lines.append(f"• {base_of(p['symbol'])} {side} {p['qty']:g} @ {p['entry']:g}, сейчас {p['upnl']:+.2f} {CUR}, "
+                         f"плечо {p['leverage']:.1f}x, стоп {p['sl']:g}")
     else:
         lines.append("Открытых позиций нет")
     if stats.get("n"):
         lines.append(f"Сделок {stats['n']}: прибыльных {stats['win_rate']}%, средний результат {stats['avg_r']}R, "
-                     f"итог {stats['pnl']:+.2f} USDT")
+                     f"итог {stats['pnl']:+.2f} {CUR} с учётом комиссий ({stats.get('fees', 0):.2f} {CUR})")
     if llm:
         lines.append(f"Модель сегодня: {llm['calls']} вызовов, {llm['usd']:.2f}$ из {llm['budget']:.0f}$")
     if next_macro:

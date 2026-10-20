@@ -3,7 +3,10 @@
 Главный поток: события из очереди (закрыть контр-позиции, сразу оценить затронутые монеты) ->
 сопровождение позиций -> периодический скан рынка -> отчёты -> самообучение."""
 import logging
+import os
 import queue
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from collections import Counter
 import sys
 import threading
@@ -13,8 +16,9 @@ from logging.handlers import RotatingFileHandler
 
 from .analyst import Analyst
 from .calendar import Calendar
-from .config import LOGS, Settings
+from .config import LOGS, MARKET_FILE, Settings
 from .exchange import Exchange
+from .moex import MoexExchange
 from . import fmt
 from .executor import Executor
 from .journal import Journal
@@ -52,10 +56,12 @@ class Bot:
     def __init__(self, dry_run=False):
         self.s = Settings()
         self.dry = dry_run
-        self.ex = Exchange(self.s)
-        self.j = Journal()
+        self.market = self.s.market
+        fmt.CUR = self.s.get("currency", "USDT")
+        self.ex = MoexExchange(self.s) if self.market == "moex" else Exchange(self.s)
+        self.j = Journal(self.s.db_path)
         self.tg = Telegram(self.s.telegram_token, self.s.telegram_chat_id)
-        self.cal = Calendar()
+        self.cal = Calendar(settings=self.s)
         self.playbook = Playbook()
         self.risk = RiskManager(self.s, self.ex, self.j, self.cal)
         self.exe = Executor(self.s, self.ex, self.risk, self.j, self.tg)
@@ -185,6 +191,10 @@ class Bot:
         if ta:
             ta["price_now"] = tk["last"] or float(df1h["close"].iloc[-1])
         tk["long_ratio"] = self.ex.long_short_ratio(symbol)
+        if hasattr(self.ex, "whale_flow"):   # Мосбиржа: крупные сделки за час и перекос стакана
+            wf = self.ex.whale_flow(symbol)
+            tk["whale_imb"], tk["whale_n"] = (wf["imbalance"], wf["n_big"]) if wf else (None, 0)
+            tk["book_imb"] = self.ex.book_imbalance(symbol)
         oi = self.ex.open_interest(symbol, 24)
         self.cache[symbol] = (time.time(), ta, tk, oi, df1h)
         return ta, tk, oi
@@ -313,7 +323,18 @@ class Bot:
         except Exception as e:  # noqa: BLE001
             log.warning("теневая сделка %s: %s", sig.symbol, e)
 
+    def session_open(self):
+        """Мосбиржа: входы только в часы сессии из настроек (время московское). Крипта круглосуточно."""
+        hours = self.s.get("moex.trading_hours") if self.market == "moex" else None
+        if not hours:
+            return True
+        now = datetime.now(ZoneInfo("Europe/Moscow")).strftime("%H:%M")
+        return any(a <= now <= b for a, b in hours)
+
     def step_scan(self, equity, positions):
+        if not self.session_open():
+            log.info("скан: вне торговых часов, входов нет")
+            return
         universe = self.ex.universe()
         inst = self.ex.instruments()
         for e in self.j.recent_events(72):
@@ -403,12 +424,26 @@ class Bot:
                 self.tg.send("👻 Теневые сделки (сигналы, которые бот не взял, проверенные по факту)\n"
                              + self.shadow.summary_text(7, top=10, detailed=True) + "\n\n"
                              + self.shadow.summary_text(30, top=10, detailed=True))
+            elif c == "/market":
+                parts = cmd.split()
+                target = parts[1].lower() if len(parts) > 1 else ""
+                if target not in ("crypto", "moex"):
+                    self.tg.send(f"Сейчас рынок: {self.market}. Переключить: /market crypto или /market moex")
+                elif target == self.market:
+                    self.tg.send(f"Уже торгуем {self.market}")
+                else:
+                    n = self.exe.close_all(f"переключение рынка на {target}")
+                    MARKET_FILE.write_text(target, encoding="utf-8")
+                    self.tg.send(f"🔁 Переключаюсь на {target}: закрыто позиций и ордеров {n}, перезапуск через несколько секунд")
+                    log.info("Переключение рынка на %s, перезапуск", target)
+                    time.sleep(2)
+                    os._exit(3)   # systemd поднимет процесс заново уже с другим рынком
             elif c == "/why":
                 f, bw = self.last_funnel
                 self.tg.send("Последний скан, почему нет входа:\n"
                              + fmt.funnel_text(f, bw, self.s.get("signals.entry_threshold"), top=8))
             elif c == "/help":
-                self.tg.send("/status /why /shadow /stop /panic /resume /review /approve /lessons /calendar")
+                self.tg.send("/status /why /shadow /market /stop /panic /resume /review /approve /lessons /calendar")
 
     def _auto_apply(self):
         return bool(self.s.get("learning.auto_apply")) and self.s.mode != "live"
@@ -424,7 +459,8 @@ class Bot:
         x_on = self.xstream.start() if self.xstream else False
         m = self.risk.metrics(equity)
         mode = {"demo": "demo-счёт, виртуальные деньги", "testnet": "testnet", "live": "РЕАЛЬНЫЕ ДЕНЬГИ"}[self.s.mode]
-        self.tg.send(f"🤖 Бот запущен ({mode}{', dry-run: сделки не открываются, только сигналы' if self.dry else ''})\n"
+        mk = {"crypto": "крипта, Bybit", "moex": "Мосбиржа, T-Invest"}.get(self.market, self.market)
+        self.tg.send(f"🤖 Бот запущен: {mk} ({mode}{', dry-run: сделки не открываются, только сигналы' if self.dry else ''})\n"
                      f"Торговый капитал {m['tradable']:.0f} USDT, резерв {m['reserve']:.0f}, весь счёт {equity:.0f} USDT\n"
                      f"Аналитик {'включён' if self.analyst else 'ВЫКЛЮЧЕН (нет ANTHROPIC_API_KEY)'}; "
                      f"новости: {len(self.news.tg_channels)} Telegram-каналов, RSS, анонсы бирж{', поток X' if x_on else ''}")

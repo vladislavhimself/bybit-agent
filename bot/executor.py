@@ -67,6 +67,9 @@ class Executor:
         dist = ta["atr"] * r["stop_atr_mult"]
         long = sig.direction == "long"
         side = "Buy" if long else "Sell"
+        if hasattr(self.ex, "trading_open") and not self.ex.trading_open(sig.symbol):
+            log.info("%s: торги по инструменту сейчас не идут", sig.symbol)
+            return None
         mode, why = self._entry_mode(sig, ta)
         if mode == "market":
             stop = price - dist if long else price + dist
@@ -114,10 +117,15 @@ class Executor:
                      f"Почему: {'; '.join(fmt.short_reasons(sig, ta))}")
         return -1
 
+    def _mult(self, symbol):
+        return float(self.ex.instruments().get(symbol, {}).get("mult") or 1.0)
+
     def _finish_entry(self, sig, atr, dist, lev, order_id, equity, fallback_price, fallback_qty):
         """Позиция уже есть на бирже: уточнить вход, поставить стоп и тейки, записать в журнал, сообщить."""
         r = self.s.get("risk")
         long = sig.direction == "long"
+        mult = self._mult(sig.symbol)
+        fee_in = float((getattr(self.ex, "_last_fill", None) or {}).get("commission") or 0.0)
         side = "Buy" if long else "Sell"
         entry, qty = fallback_price, fallback_qty
         for _ in range(5):
@@ -144,11 +152,12 @@ class Executor:
             "tier": sig.tier, "score": sig.components["total"], "confidence": sig.strength,
             "reasons": sig.reasons, "regime": sig.regime, "atr": atr, "leverage": lev,
             "order_id": order_id, "news_driven": sig.news_driven, "tp_plan": plan, "event_key": sig.event_key,
+            "mult": mult, "fees": fee_in,
         })
         risk_pct = r["risk_per_trade_pct"][sig.tier]
         ta_short = {"trend_1h": 0, "trend_4h": 0, "trend_d": 0, "breakout": 0, "rsi": 0}
-        self.tg.send(fmt.entry_message(sig, entry, qty, lev, stop, plan, risk_pct, abs(entry - stop) * qty,
-                                       self.risk.tradable(equity), equity, ta_short))
+        self.tg.send(fmt.entry_message(sig, entry, qty, lev, stop, plan, risk_pct, abs(entry - stop) * qty * mult,
+                                       self.risk.tradable(equity), equity, ta_short, mult=mult, fee=fee_in))
         return tid
 
     def check_pendings(self, equity):
@@ -233,6 +242,12 @@ class Executor:
                         be = t["entry"] * (1 + 0.0015 * (1 if long else -1))
                         self._move_stop(t, be, "безубыток после первого тейка")
                 t["qty"], t["tp_hits"] = pos["qty"], new_hits
+
+            # программный стоп: подстраховка, если стоп-заявка на бирже не сработала (или её нет)
+            if r.get("soft_stops") and ((long and mark <= t["stop"]) or (not long and mark >= t["stop"])):
+                self._close_now(t, f"стоп {t['stop']:g} (программный)")
+                closed.append(t)
+                continue
 
             # пик прибыли (MFE) и когда он обновлялся
             mfe = t.get("mfe_r") or 0.0
@@ -335,13 +350,14 @@ class Executor:
         self._finalize(t, reason)
 
     def _exchange_result(self, t):
-        """(pnl, exit) по данным биржи за время жизни сделки, с повторами. None, если биржа не ответила."""
+        """(pnl, exit, fees) по данным биржи за время жизни сделки, с повторами. None, если биржа не ответила.
+        pnl уже за вычетом комиссий (и Bybit, и T-Invest считают так)."""
         since = t["opened_ts"] * 1000 - 60000
         for attempt in range(4):
             try:
                 rows = [x for x in self.ex.closed_pnl(t["symbol"], start_ms=since) if x["ts"] >= since]
                 if rows:
-                    return sum(x["pnl"] for x in rows), rows[0]["exit"]
+                    return sum(x["pnl"] for x in rows), rows[0]["exit"], sum(x.get("fees") or 0 for x in rows)
                 if attempt >= 1:
                     return None   # биржа ответила, но записей нет (ещё не прошла запись о закрытии)
             except Exception as e:  # noqa: BLE001
@@ -352,26 +368,27 @@ class Executor:
     def _finalize(self, t, reason):
         self.ex.cancel_all(t["symbol"])
         res = self._exchange_result(t)
+        fees = None
         if res is None:
             pnl, exit_price = 0.0, t["entry"]
             reason = reason + " (результат не получен с биржи, уточню позже)"
         else:
-            pnl, exit_price = res
-        self.j.close_trade(t["id"], exit_price, pnl, reason)
-        risk = abs(t["entry"] - t["stop_init"]) * (t.get("qty_init") or t["qty"])
+            pnl, exit_price, fees = res
+        self.j.close_trade(t["id"], exit_price, pnl, reason, fees)
+        risk = abs(t["entry"] - t["stop_init"]) * (t.get("qty_init") or t["qty"]) * (t.get("mult") or 1.0)
         pnl_r = pnl / risk if risk > 0 else 0
         try:
             tradable = self.risk.tradable(self.ex.equity()[0])
         except Exception:  # noqa: BLE001
             tradable = None
-        self.tg.send(fmt.close_message(t, pnl, pnl_r, reason, tradable))
+        self.tg.send(fmt.close_message(t, pnl, pnl_r, reason, tradable, fees))
 
     def reconcile(self):
         """Дозаполнить результат сделок, по которым биржа не ответила при закрытии."""
         for t in self.j.unreconciled(48):
             res = self._exchange_result(t)
             if res is not None:
-                pnl, exit_price = res
+                pnl, exit_price, _fees = res
                 self.j.update_pnl(t["id"], exit_price, pnl, t["close_reason"].split(" (результат")[0])
                 log.info("%s: результат уточнён: %+.2f USDT", t["symbol"], pnl)
                 self.tg.send(f"ℹ️ Уточнение по {fmt.base_of(t['symbol'])}: результат {pnl:+.2f} USDT")

@@ -78,6 +78,14 @@ def positioning_score(ticker, oi_hist, ta, whale_net=0.0, mood=0.0):
         score += 0.6; reasons.append(f"фандинг {f*100:.3f}% — переполнены шорты")
     elif f <= -0.0002:
         score += 0.3; reasons.append(f"фандинг {f*100:.3f}% — перекос в шорт")
+    wf = ticker.get("whale_imb")
+    if wf is not None and ticker.get("whale_n", 0) >= 5 and abs(wf) >= 0.3:
+        score += 0.4 * wf
+        reasons.append(f"крупные сделки за час: {'покупают' if wf > 0 else 'продают'} ({wf:+.2f}, {ticker.get('whale_n')} шт.)")
+    bi = ticker.get("book_imb")
+    if bi is not None and abs(bi) >= 0.3:
+        score += 0.15 * bi
+        reasons.append(f"стакан: перевес {'покупателей' if bi > 0 else 'продавцов'} ({bi:+.2f})")
     ls = ticker.get("long_ratio")
     if ls is not None:
         if ls >= 0.68:
