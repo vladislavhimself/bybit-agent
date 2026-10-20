@@ -1,4 +1,4 @@
-# Установка бота на Windows: виртуальное окружение, зависимости, автозапуск через планировщик задач.
+﻿# Установка бота на Windows: виртуальное окружение, зависимости, автозапуск через планировщик задач.
 # Запуск из папки проекта в PowerShell от администратора:
 #   powershell -ExecutionPolicy Bypass -File scripts\windows\install.ps1
 # Повторный запуск безопасен: обновляет зависимости и перезапускает бота.
@@ -14,7 +14,7 @@ if (-not (Test-Path "$root\.env")) {
 
 $py = Get-Command python -ErrorAction SilentlyContinue
 if (-not $py) { Write-Host "ОШИБКА: python не найден. Установите Python 3.12 с python.org с галочкой 'Add python.exe to PATH'." -ForegroundColor Red; exit 1 }
-$ver = & python -c "import sys; print('%d.%d' % sys.version_info[:2])"
+$ver = & python -c "import sys; print(str(sys.version_info[0]) + '.' + str(sys.version_info[1]))"
 Write-Host "Python $ver"
 if ([version]$ver -lt [version]"3.11") { Write-Host "ОШИБКА: нужен Python 3.11 или новее." -ForegroundColor Red; exit 1 }
 

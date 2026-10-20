@@ -1,4 +1,4 @@
-# Цикл запуска бота: при любом завершении (ошибка, /update, /market) ждёт 10 с и запускает заново.
+﻿# Цикл запуска бота: при любом завершении (ошибка, /update, /market) ждёт 10 с и запускает заново.
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Set-Location $root
 $env:PYTHONUNBUFFERED = "1"

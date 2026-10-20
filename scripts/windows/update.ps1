@@ -1,4 +1,4 @@
-# Обновление бота до последней версии из GitHub и перезапуск. Запуск из папки проекта от администратора:
+﻿# Обновление бота до последней версии из GitHub и перезапуск. Запуск из папки проекта от администратора:
 #   powershell -ExecutionPolicy Bypass -File scripts\windows\update.ps1
 # То же самое делает команда /update в Telegram.
 $ErrorActionPreference = "Stop"
