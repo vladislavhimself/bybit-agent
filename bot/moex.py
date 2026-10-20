@@ -4,6 +4,7 @@
 у фьючерсов в пунктах. mult(symbol) = рублей за 1 пункт цены на 1 лот: у акций размер лота, у фьючерсов стоимость
 шага цены / шаг. Риск сделки = |вход − стоп| × mult × лоты, объём = цена × mult × лоты."""
 import logging
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -56,6 +57,7 @@ class MoexExchange:
         self._inst_ts = 0.0
         self._uid2sym = {}
         self._figi2sym = {}
+        self._turn_cache, self._turn_ts, self._iss_down_until, self._turn_thread = {}, 0.0, 0.0, None
         self._ensure_account()
 
     # ---------- низкоуровневое ----------
@@ -147,18 +149,73 @@ class MoexExchange:
         return [s for s, i in self.instruments().items() if i["base"] == base.upper()]
 
     def _turnover_today(self):
-        """Оборот за сегодня по акциям и фьючерсам с ISS Мосбиржи (бесплатно): тикер -> рубли."""
+        """Оборот за день по акциям и фьючерсам: тикер -> рубли.
+        Сначала ISS Мосбиржи (бесплатно, одним запросом), но с иностранных адресов ISS не отвечает (гео-блок):
+        тогда считаем по дневным свечам T-Invest и держим результат в кэше 45 минут."""
+        now = time.time()
+        if self._turn_cache and now - self._turn_ts < 45 * 60:
+            return self._turn_cache
+        if self._turn_cache:
+            # есть прошлый срез: обновляем в фоне, чтобы не держать главный цикл (по свечам это 2-3 минуты)
+            if not (self._turn_thread and self._turn_thread.is_alive()):
+                self._turn_thread = threading.Thread(target=self._refresh_turnover, daemon=True, name="turnover")
+                self._turn_thread.start()
+            return self._turn_cache
+        return self._refresh_turnover()
+
+    def _refresh_turnover(self):
+        now = time.time()
         out = {}
-        for url in ("https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities.json?iss.meta=off&iss.only=marketdata&marketdata.columns=SECID,VALTODAY",
-                    "https://iss.moex.com/iss/engines/futures/markets/forts/boards/RFUD/securities.json?iss.meta=off&iss.only=marketdata&marketdata.columns=SECID,VALTODAY"):
+        if now >= self._iss_down_until:
+            for url in ("https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities.json?iss.meta=off&iss.only=marketdata&marketdata.columns=SECID,VALTODAY",
+                        "https://iss.moex.com/iss/engines/futures/markets/forts/boards/RFUD/securities.json?iss.meta=off&iss.only=marketdata&marketdata.columns=SECID,VALTODAY"):
+                try:
+                    md = self.http.get(url, timeout=8).json()["marketdata"]
+                    cols = md["columns"]
+                    for row in md["data"]:
+                        d = dict(zip(cols, row))
+                        out[d["SECID"]] = float(d.get("VALTODAY") or 0)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("ISS оборот недоступен (%s), час считаем по свечам T-Invest", str(e)[:80])
+                    self._iss_down_until = now + 3600
+                    out = {}
+                    break
+        if not out:
+            out = self._turnover_tinvest()
+        if out:
+            self._turn_cache, self._turn_ts = out, now
+        return out
+
+    def _turnover_tinvest(self):
+        """Оборот по дневным свечам T-Invest: максимум за последние два торговых дня (утром сегодняшний ещё пуст).
+        Один запрос на инструмент, поэтому только кандидаты: акции TQBR и фьючерсы на акции/индексы."""
+        inst = self.instruments()
+        mcfg = self.s.get("moex") or {}
+        min_days = int(mcfg.get("min_days_to_expiry", 20))
+        today = datetime.now(timezone.utc).date()
+        share_bases = {i["base"] for i in inst.values() if i["kind"] == "share"}
+        allowed_idx = set(mcfg.get("allowed_future_bases") or ["IMOEX", "RTS"])
+        cands = []
+        for sym, it in inst.items():
+            if it["kind"] == "future":
+                if it["base"] not in share_bases and it["base"] not in allowed_idx:
+                    continue
+                if it["expiration"] and (datetime.strptime(it["expiration"], "%Y-%m-%d").date() - today).days < min_days:
+                    continue
+            cands.append(sym)
+        out, t0 = {}, time.time()
+        end_ts = int(time.time())
+        for sym in cands:
+            it = inst[sym]
             try:
-                md = self.http.get(url, timeout=20).json()["marketdata"]
-                cols = md["columns"]
-                for row in md["data"]:
-                    d = dict(zip(cols, row))
-                    out[d["SECID"]] = float(d.get("VALTODAY") or 0)
+                r = self.call("MarketDataService", "GetCandles", {"instrumentId": it["uid"], "interval": "CANDLE_INTERVAL_DAY",
+                                                                  "from": iso(end_ts - 3 * 86400), "to": iso(end_ts)}, retries=1)
+                vals = [float(c.get("volume") or 0) * q2f(c["close"]) * it["mult"] for c in r.get("candles", [])[-2:]]
+                out[sym] = max(vals) if vals else 0.0
             except Exception as e:  # noqa: BLE001
-                log.warning("ISS оборот: %s", e)
+                log.debug("оборот %s: %s", sym, e)
+            time.sleep(0.12)   # лимит T-Invest на рыночные данные
+        log.info("Оборот по свечам T-Invest: %d инструментов за %.0f с", len(out), time.time() - t0)
         return out
 
     def universe(self):
