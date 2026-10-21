@@ -79,6 +79,7 @@ class NewsCollector:
         self.last = {"rss": 0.0, "binance": 0.0, "bybit": 0.0, "cryptopanic": 0.0}
         self.tg_channels = settings.get("sources.telegram_channels") or []
         self.session = net.session()   # российские ленты через ретранслятор, если он настроен
+        self._rss_fail = {}
         self.session.headers.update(UA)
         self.last.update({"truth": 0.0, "twitter": 0.0})
         self.twitter_since_id = None
@@ -123,7 +124,10 @@ class NewsCollector:
                                   "title": e.get("title", "").strip(), "summary": _clean(e.get("summary", "")),
                                   "url": link, "published_ts": ts})
             except Exception as ex:  # noqa: BLE001
-                log.warning("RSS %s: %s", name, ex)
+                # недоступная лента (гео-блок, антибот): предупреждаем раз в час, дальше тихо
+                last = self._rss_fail.get(name, 0)
+                self._rss_fail[name] = now
+                (log.warning if now - last > 3600 else log.debug)("RSS %s: %s", name, str(ex)[:160])
         return items
 
     def _binance(self, now):
