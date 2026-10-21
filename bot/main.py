@@ -83,7 +83,7 @@ class Bot:
         if self.reviewer:
             self.reviewer.shadow = self.shadow   # разбор учитывает и теневые сделки
         self.news = NewsCollector(self.ex, self.j, self.s)
-        self.last_known, self.last_known_ts, self.broker_down_since = None, time.time(), None
+        self.last_known, self.last_known_ts, self.broker_down_since = (0.0, [], {"wallet": 0.0}), time.time(), None   # до первого ответа биржи
         self.expect = self.crowd = None
         if self.market == "moex":
             self.news.disclosure = Disclosure(self.s, self.ex)
@@ -557,8 +557,6 @@ class Bot:
                     self.risk.check(equity, realized=bal["wallet"])
                 except Exception as e:  # noqa: BLE001
                     # биржа/ретранслятор недоступны: команды из Telegram всё равно обрабатываем по последним данным
-                    if not getattr(self, "last_known", None):
-                        raise
                     equity, positions, bal = self.last_known
                     self.broker_down_since = getattr(self, "broker_down_since", None) or now
                     log.error("Биржа недоступна (%s), работаю по последним данным от %s",
