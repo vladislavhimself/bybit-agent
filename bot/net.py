@@ -121,16 +121,35 @@ class RoutedSession(requests.Session):
 
     def get_adapter(self, url):
         host = urlsplit(url).hostname
-        if self._relay is not None and is_ru_host(host):
+        if self._relay is not None and is_ru_host(host) and not self._prefer_direct(host):
             return self._relay
         return self._direct
+
+    # хосты, до которых из России хуже, чем напрямую (RBC, Forbes, Смарт-лаб...): запоминаем на час
+    _direct_until = {}
+
+    def _prefer_direct(self, host):
+        return self._direct_until.get(host, 0) > time.time()
 
     def request(self, method, url, **kw):
         if not kw.get("proxies") and self._relay is None:
             p = proxies_for(url)
             if p:
                 kw["proxies"] = p
-        return super().request(method, url, **kw)
+        host = urlsplit(url).hostname
+        try:
+            return super().request(method, url, **kw)
+        except requests.ConnectionError as e:
+            # ретранслятор не справился: один раз пробуем напрямую и, если вышло, час ходим напрямую
+            if self._relay is None or not is_ru_host(host) or self._prefer_direct(host):
+                raise
+            log.info("%s через ретранслятор не отвечает (%s), пробую напрямую", host, str(e)[:80])
+            self._direct_until[host] = time.time() + 3600
+            try:
+                return super().request(method, url, **kw)
+            except requests.RequestException:
+                self._direct_until.pop(host, None)
+                raise e
 
 
 def session():
