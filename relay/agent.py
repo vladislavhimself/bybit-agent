@@ -27,8 +27,29 @@ from urllib3.util.retry import Retry  # noqa: E402
 session.mount("https://", HTTPAdapter(pool_maxsize=32, max_retries=Retry(total=1, connect=1, read=1, backoff_factor=0.5,
                                                                            allowed_methods=None, status_forcelist=())))
 VERIFY = os.environ.get("RELAY_CA") or True   # связка с российским корневым сертификатом для *.tbank.ru
-pool = ThreadPoolExecutor(max_workers=16)
+pool = ThreadPoolExecutor(max_workers=6)
 send_lock = threading.Lock()
+# бережный ритм к T-Bank, чтобы защита от DDoS не приняла бота за сканер: не больше RATE_PER_MIN запросов
+# в минуту и не больше 4 одновременных соединений к хостам tbank
+RATE_PER_MIN = int(os.environ.get("RELAY_RATE_PER_MIN", "90"))
+_rate_lock = threading.Lock()
+_rate_times = []
+_tbank_sem = threading.Semaphore(4)
+
+
+def _throttle(host):
+    if "tbank" not in host and "tinkoff" not in host:
+        return
+    while True:
+        with _rate_lock:
+            now = time.time()
+            while _rate_times and now - _rate_times[0] > 60:
+                _rate_times.pop(0)
+            if len(_rate_times) < RATE_PER_MIN:
+                _rate_times.append(now)
+                return
+            wait = 60 - (now - _rate_times[0]) + 0.05
+        time.sleep(min(max(wait, 0.1), 5))
 
 
 def allowed_host(host):
@@ -44,8 +65,16 @@ def execute(req):
             return {"id": req.get("id"), "error": f"host not allowed: {host}"}
         body = base64.b64decode(req.get("body_b64") or "") or None
         headers = {k: v for k, v in (req.get("headers") or {}).items() if k.lower() not in HOP}
-        r = session.request(req.get("method", "GET"), url, headers=headers, data=body,
-                            timeout=(10, float(req.get("timeout") or 30)), allow_redirects=False, verify=VERIFY)
+        _throttle(host)
+        sem = _tbank_sem if ("tbank" in host or "tinkoff" in host) else None
+        if sem:
+            sem.acquire()
+        try:
+            r = session.request(req.get("method", "GET"), url, headers=headers, data=body,
+                                timeout=(10, float(req.get("timeout") or 30)), allow_redirects=False, verify=VERIFY)
+        finally:
+            if sem:
+                sem.release()
         return {"id": req.get("id"), "status": r.status_code, "reason": r.reason,
                 "headers": {k: v for k, v in r.headers.items() if k.lower() not in HOP},
                 "gz": True, "body_b64": base64.b64encode(zlib.compress(r.content, 6)).decode()}

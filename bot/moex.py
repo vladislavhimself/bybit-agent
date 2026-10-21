@@ -132,7 +132,7 @@ class MoexExchange:
         log.info("T-Invest %s, счёт %s", "песочница" if self.mode != "live" else "БОЕВОЙ", self.account)
 
     # ---------- инструменты ----------
-    def instruments(self, max_age=3600):
+    def instruments(self, max_age=6 * 3600):
         if self._inst and time.time() - self._inst_ts < max_age:
             return self._inst
         if self._inst:
@@ -193,7 +193,7 @@ class MoexExchange:
         Сначала ISS Мосбиржи (бесплатно, одним запросом), но с иностранных адресов ISS не отвечает (гео-блок):
         тогда считаем по дневным свечам T-Invest и держим результат в кэше 45 минут."""
         now = time.time()
-        if self._turn_cache and now - self._turn_ts < 45 * 60:
+        if self._turn_cache and now - self._turn_ts < 3 * 3600:
             return self._turn_cache
         if self._turn_cache:
             # есть прошлый срез: обновляем в фоне, чтобы не держать главный цикл (по свечам это 2-3 минуты)
@@ -254,7 +254,7 @@ class MoexExchange:
                 out[sym] = max(vals) if vals else 0.0
             except Exception as e:  # noqa: BLE001
                 log.debug("оборот %s: %s", sym, e)
-            time.sleep(0.12)   # лимит T-Invest на рыночные данные
+            time.sleep(0.4)    # бережный ритм: защита T-Bank от DDoS реагирует на частые соединения
         log.info("Оборот по свечам T-Invest: %d инструментов за %.0f с", len(out), time.time() - t0)
         return out
 
