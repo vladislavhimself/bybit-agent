@@ -24,7 +24,7 @@ session = requests.Session()
 # T-Bank иногда молча рвёт простаивающие соединения: один повтор на обрыв/таймаут чтения вместо ошибки голове
 from requests.adapters import HTTPAdapter  # noqa: E402
 from urllib3.util.retry import Retry  # noqa: E402
-session.mount("https://", HTTPAdapter(pool_maxsize=32, max_retries=Retry(total=2, connect=2, read=1, backoff_factor=0.3,
+session.mount("https://", HTTPAdapter(pool_maxsize=32, max_retries=Retry(total=1, connect=1, read=1, backoff_factor=0.5,
                                                                            allowed_methods=None, status_forcelist=())))
 VERIFY = os.environ.get("RELAY_CA") or True   # связка с российским корневым сертификатом для *.tbank.ru
 pool = ThreadPoolExecutor(max_workers=16)
@@ -103,7 +103,8 @@ def keepalive():
 
 
 def main():
-    threading.Thread(target=keepalive, daemon=True, name="keepalive").start()
+    if os.environ.get("RELAY_KEEPALIVE") == "1":   # выключено по умолчанию: частые соединения могут выглядеть как атака
+        threading.Thread(target=keepalive, daemon=True, name="keepalive").start()
     url = os.environ["RELAY_WS"].rstrip("/")
     key = os.environ["RELAY_KEY"]
     host = urlsplit(url).hostname
