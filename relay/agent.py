@@ -21,6 +21,11 @@ RU_SUFFIXES = (".ru", ".su", "moex.com", "tbank.ru", "tinkoff.ru")
 HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers",
        "transfer-encoding", "upgrade", "content-length", "content-encoding", "host"}
 session = requests.Session()
+# T-Bank иногда молча рвёт простаивающие соединения: один повтор на обрыв/таймаут чтения вместо ошибки голове
+from requests.adapters import HTTPAdapter  # noqa: E402
+from urllib3.util.retry import Retry  # noqa: E402
+session.mount("https://", HTTPAdapter(pool_maxsize=32, max_retries=Retry(total=2, connect=2, read=1, backoff_factor=0.3,
+                                                                           allowed_methods=None, status_forcelist=())))
 VERIFY = os.environ.get("RELAY_CA") or True   # связка с российским корневым сертификатом для *.tbank.ru
 pool = ThreadPoolExecutor(max_workers=16)
 send_lock = threading.Lock()
@@ -86,7 +91,19 @@ def open_socket(host, port=443):
 LAST_GOOD = {"ip": ""}
 
 
+def keepalive():
+    """T-Bank принимает не каждое новое соединение с адресов дата-центров: держим пул соединений тёплым."""
+    while True:
+        for h in ("https://sandbox-invest-public-api.tbank.ru/", "https://invest-public-api.tbank.ru/"):
+            try:
+                session.get(h, timeout=(6, 10), verify=VERIFY)
+            except requests.RequestException:
+                pass
+        time.sleep(15)
+
+
 def main():
+    threading.Thread(target=keepalive, daemon=True, name="keepalive").start()
     url = os.environ["RELAY_WS"].rstrip("/")
     key = os.environ["RELAY_KEY"]
     host = urlsplit(url).hostname

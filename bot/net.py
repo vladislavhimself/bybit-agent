@@ -141,8 +141,8 @@ class RoutedSession(requests.Session):
             return super().request(method, url, **kw)
         except requests.ConnectionError as e:
             # ретранслятор не справился: один раз пробуем напрямую и, если вышло, час ходим напрямую
-            if self._relay is None or not is_ru_host(host) or self._prefer_direct(host):
-                raise
+            if self._relay is None or not is_ru_host(host) or self._prefer_direct(host) or "tbank.ru" in host or "tinkoff.ru" in host:
+                raise   # API брокера из-за границы закрыт: напрямую пробовать бессмысленно, только ждать ретранслятор
             log.info("%s через ретранслятор не отвечает (%s), пробую напрямую", host, str(e)[:80])
             self._direct_until[host] = time.time() + 3600
             try:

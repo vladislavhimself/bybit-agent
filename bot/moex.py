@@ -473,6 +473,13 @@ class MoexExchange:
         it = self.instruments()[symbol]
         if it["kind"] != "future":
             return None
+        if self.mode != "live":
+            # песочница не знает гарантийного обеспечения: контракт списывает полную стоимость с денег,
+            # иначе ордер отвергается с «Not enough balance». Считаем ГО = стоимость контракта.
+            try:
+                return self.last_price(symbol) * it["mult"] * it["lot"]
+            except Exception:  # noqa: BLE001
+                return None
         try:
             m = self.call("InstrumentsService", "GetFuturesMargin", {"instrumentId": it["uid"]})
             return q2f(m.get("initialMarginOnBuy" if side == "Buy" else "initialMarginOnSell"))
