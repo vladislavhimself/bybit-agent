@@ -1,6 +1,6 @@
 """Ретранслятор на российской машине: держит WebSocket к брокеру (Cloudflare Worker), получает запросы головы,
 выполняет их с российского адреса и отправляет ответ обратно. Пересылаются только российские хосты.
-Окружение: RELAY_WS=wss://bot-relay.<account>.workers.dev/ws, RELAY_KEY=...
+Окружение: RELAY_WS=wss://bot-relay.<account>.workers.dev/ws, RELAY_KEY=..., RELAY_CA=/opt/relay/ca_bundle.pem
 Запуск: python3 agent.py"""
 import base64
 import json
@@ -20,6 +20,7 @@ RU_SUFFIXES = (".ru", ".su", "moex.com", "tbank.ru", "tinkoff.ru")
 HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers",
        "transfer-encoding", "upgrade", "content-length", "content-encoding", "host"}
 session = requests.Session()
+VERIFY = os.environ.get("RELAY_CA") or True   # связка с российским корневым сертификатом для *.tbank.ru
 pool = ThreadPoolExecutor(max_workers=16)
 send_lock = threading.Lock()
 
@@ -38,7 +39,7 @@ def execute(req):
         body = base64.b64decode(req.get("body_b64") or "") or None
         headers = {k: v for k, v in (req.get("headers") or {}).items() if k.lower() not in HOP}
         r = session.request(req.get("method", "GET"), url, headers=headers, data=body,
-                            timeout=(10, float(req.get("timeout") or 30)), allow_redirects=False)
+                            timeout=(10, float(req.get("timeout") or 30)), allow_redirects=False, verify=VERIFY)
         return {"id": req.get("id"), "status": r.status_code, "reason": r.reason,
                 "headers": {k: v for k, v in r.headers.items() if k.lower() not in HOP},
                 "gz": True, "body_b64": base64.b64encode(zlib.compress(r.content, 6)).decode()}
