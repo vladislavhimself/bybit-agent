@@ -6,6 +6,7 @@ import base64
 import json
 import logging
 import os
+import socket
 import threading
 import time
 import zlib
@@ -63,20 +64,45 @@ def handle(ws, raw):
             log.warning("send: %s", e)
 
 
+def open_socket(host, port=443):
+    """Российские фильтры режут часть адресов Cloudflare: перебираем все IPv4 хоста, берём первый живой."""
+    ips = sorted({ai[4][0] for ai in socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)})
+    if LAST_GOOD["ip"] in ips:
+        ips.remove(LAST_GOOD["ip"])
+        ips.insert(0, LAST_GOOD["ip"])
+    last = None
+    for ip in ips:
+        try:
+            sock = socket.create_connection((ip, port), timeout=6)
+            sock.settimeout(10)
+            LAST_GOOD["ip"] = ip
+            return sock
+        except OSError as e:
+            last = e
+            log.debug("connect %s: %s", ip, e)
+    raise OSError(f"no reachable address for {host}: {last}")
+
+
+LAST_GOOD = {"ip": ""}
+
+
 def main():
     url = os.environ["RELAY_WS"].rstrip("/")
     key = os.environ["RELAY_KEY"]
+    host = urlsplit(url).hostname
     backoff = 2
     while True:
         try:
-            with connect(f"{url}?role=relay&key={key}", max_size=8 * 1024 * 1024, open_timeout=20,
-                         ping_interval=20, ping_timeout=20) as ws:
+            sock = open_socket(host)
+            with connect(f"{url}?role=relay&key={key}", sock=sock, server_hostname=host, max_size=8 * 1024 * 1024,
+                         open_timeout=20, ping_interval=20, ping_timeout=20) as ws:
                 log.info("connected to broker")
                 backoff = 2
                 for raw in ws:
                     pool.submit(handle, ws, raw)
         except Exception as e:  # noqa: BLE001
             log.warning("broker connection: %s; reconnect in %ds", str(e)[:150], backoff)
+            LAST_GOOD["ip"] = ""
             time.sleep(backoff)
             backoff = min(backoff * 2, 60)
 
