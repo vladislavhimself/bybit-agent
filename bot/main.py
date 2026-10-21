@@ -361,12 +361,22 @@ class Bot:
             return
         universe = self.ex.universe()
         inst = self.ex.instruments()
+        extra = []
         for e in self.j.recent_events(72):
             if e["importance"] >= 6:
                 for base in e["affected"]:
-                    for sym in self.ex.symbols_for_base(base):
-                        if sym in inst and sym not in universe:
-                            universe.append(sym)
+                    syms = [x for x in self.ex.symbols_for_base(base) if x in inst]
+                    if not syms or any(x in universe for x in syms):
+                        continue
+                    # одна бумага на компанию: вечный фьючерс, иначе ближайший квартальный, иначе акция
+                    perp = [x for x in syms if inst[x].get("perpetual")]
+                    fut = sorted((x for x in syms if inst[x]["kind"] == "future" and inst[x].get("expiration")),
+                                 key=lambda x: inst[x]["expiration"])
+                    share = [x for x in syms if inst[x]["kind"] == "share"]
+                    pick = (perp or fut or share)[:1]
+                    if pick and pick[0] not in extra:
+                        extra.append(pick[0])
+        universe = universe + extra[:10]   # бережём лимиты брокера: не больше ~35 бумаг за скан
         self.evaluate(universe, equity, positions, tag="скан")
 
     def handle_events(self, equity, positions):
