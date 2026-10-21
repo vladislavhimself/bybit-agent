@@ -19,9 +19,9 @@ publish() {
 }
 
 while true; do
-  cloudflared tunnel --no-autoupdate --url "http://127.0.0.1:${PORT}" 2>&1 | while IFS= read -r line; do
+  cloudflared tunnel --no-autoupdate --protocol http2 --region us --url "http://127.0.0.1:${PORT}" 2>&1 | while IFS= read -r line; do
     echo "$line"
-    if [[ "$line" =~ (https://[a-z0-9-]+\.trycloudflare\.com) ]]; then
+    if [[ "$line" =~ (https://[a-z0-9-]+-[a-z0-9-]+\.trycloudflare\.com) ]] && [[ "$line" != *api.trycloudflare.com* ]]; then
       publish "${BASH_REMATCH[1]}"
     fi
   done

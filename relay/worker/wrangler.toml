@@ -1,0 +1,12 @@
+name = "bot-relay"
+main = "worker.js"
+compatibility_date = "2025-10-01"
+workers_dev = true
+
+[[durable_objects.bindings]]
+name = "BROKER"
+class_name = "Broker"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Broker"]
