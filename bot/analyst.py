@@ -177,6 +177,14 @@ class Analyst:
             m = self.mood.text()
             if m:
                 parts.append(m)
+        if getattr(self, "expectations", None):
+            e = self.expectations.text()
+            if e:
+                parts.append(e)
+        if getattr(self, "crowd", None):
+            c = self.crowd.text(list(self.crowd.cache.keys()))
+            if c:
+                parts.append(c)
         return "\n\n".join(parts)
 
     def prefilter(self, title, summary):

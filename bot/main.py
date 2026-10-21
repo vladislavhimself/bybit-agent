@@ -29,6 +29,9 @@ from .playbook import Playbook
 from .review import Reviewer
 from .risk import RiskManager
 from .analytics import Analytics
+from .crowd import Crowd
+from .disclosure import Disclosure
+from .expectations import ExpectationsMemory
 from .shadow import ShadowBook
 from .signals import build_signal
 from .ta import snapshot
@@ -80,6 +83,13 @@ class Bot:
         if self.reviewer:
             self.reviewer.shadow = self.shadow   # разбор учитывает и теневые сделки
         self.news = NewsCollector(self.ex, self.j, self.s)
+        self.expect = self.crowd = None
+        if self.market == "moex":
+            self.news.disclosure = Disclosure(self.s, self.ex)
+            if self.analyst:
+                self.expect = ExpectationsMemory(self.s, self.j, self.analyst, self.cal)
+                self.crowd = Crowd(self.s, self.analyst, self.j)
+                self.analyst.expectations, self.analyst.crowd = self.expect, self.crowd
         self.events_q = queue.Queue()
         self.raw_q = queue.Queue()          # посты из потока X, минуя опрос
         self.news_wake = threading.Event()
@@ -147,7 +157,7 @@ class Bot:
                 if not self.analyst.prefilter(it["title"], it["summary"]):
                     continue
                 body = it["summary"]
-                if not it["source"].startswith("tg:") and self.s.get("news.full_text", True):
+                if not it["source"].startswith("tg:") and it["source"] != "disclosure" and self.s.get("news.full_text", True):
                     full = article.fetch_text(it.get("url"))
                     if full:
                         body = full   # статья целиком: направление часто ясно только из тела, а не из заголовка
@@ -205,6 +215,9 @@ class Bot:
             wf = self.ex.whale_flow(symbol)
             tk["whale_imb"], tk["whale_n"] = (wf["imbalance"], wf["n_big"]) if wf else (None, 0)
             tk["book_imb"] = self.ex.book_imbalance(symbol)
+            if self.crowd:   # толпа на форуме по базовой бумаге (кэш час)
+                base = (self.ex.instruments().get(symbol) or {}).get("base") or symbol
+                tk["crowd"], tk["crowd_reason"] = self.crowd.score(base)
         oi = self.ex.open_interest(symbol, 24)
         self.cache[symbol] = (time.time(), ta, tk, oi, df1h)
         return ta, tk, oi
@@ -533,6 +546,8 @@ class Bot:
             try:
                 self.cal.refresh()
                 self.mood.refresh()
+                if self.expect and self.expect.due(now):
+                    self.expect.refresh(now)
                 bal = self.ex.balances()
                 equity = bal["equity"]
                 positions = self.ex.positions()

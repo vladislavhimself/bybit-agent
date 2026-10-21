@@ -86,6 +86,10 @@ def positioning_score(ticker, oi_hist, ta, whale_net=0.0, mood=0.0):
     if bi is not None and abs(bi) >= 0.3:
         score += 0.15 * bi
         reasons.append(f"стакан: перевес {'покупателей' if bi > 0 else 'продавцов'} ({bi:+.2f})")
+    cr = ticker.get("crowd")
+    if cr:   # единодушная розница на форуме: аргумент против толпы (знак уже учтён)
+        score += cr
+        reasons.append(ticker.get("crowd_reason") or "толпа на форуме единодушна")
     ls = ticker.get("long_ratio")
     if ls is not None:
         if ls >= 0.68:

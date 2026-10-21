@@ -80,6 +80,7 @@ class NewsCollector:
         self.tg_channels = settings.get("sources.telegram_channels") or []
         self.session = net.session()   # российские ленты через ретранслятор, если он настроен
         self._rss_fail = {}
+        self.disclosure = None   # Disclosure (Мосбиржа), подключается из main
         self.session.headers.update(UA)
         self.last.update({"truth": 0.0, "twitter": 0.0})
         self.twitter_since_id = None
@@ -255,6 +256,12 @@ class NewsCollector:
         """Вернуть новые новости. Telegram опрашивается каждый вызов, Truth Social раз в 30 с, остальное раз в минуту."""
         now = int(time.time())
         items = self._telegram(now)
+        if self.disclosure and now - self.last.get("disclosure", 0) >= 120:
+            self.last["disclosure"] = now
+            try:
+                items += self.disclosure.poll(now)
+            except Exception as e:  # noqa: BLE001
+                log.warning("раскрытие: %s", str(e)[:120])
         if now - self.last["truth"] >= 30:
             self.last["truth"] = now
             items += self._truthsocial(now)
