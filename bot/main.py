@@ -240,6 +240,8 @@ class Bot:
         candidates = []
         funnel, best_weak = Counter(), None
         for sym in symbols:
+            if self.tg.commands:   # скан длится минуты: команды из Telegram обрабатываем, не дожидаясь его конца
+                self.handle_commands(equity, positions)
             if sym not in inst:
                 continue
             try:

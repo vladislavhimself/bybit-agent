@@ -31,7 +31,7 @@ pool = ThreadPoolExecutor(max_workers=6)
 send_lock = threading.Lock()
 # бережный ритм к T-Bank, чтобы защита от DDoS не приняла бота за сканер: не больше RATE_PER_MIN запросов
 # в минуту и не больше 4 одновременных соединений к хостам tbank
-RATE_PER_MIN = int(os.environ.get("RELAY_RATE_PER_MIN", "90"))
+RATE_PER_MIN = int(os.environ.get("RELAY_RATE_PER_MIN", "150"))
 _rate_lock = threading.Lock()
 _rate_times = []
 _tbank_sem = threading.Semaphore(4)

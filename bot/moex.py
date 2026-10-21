@@ -63,7 +63,8 @@ class MoexExchange:
         self._turn_cache, self._turn_ts, self._iss_down_until, self._turn_thread = {}, 0.0, 0.0, None
         self._realized, self._realized_ts = 0.0, 0.0
         self._ensure_account()
-        threading.Thread(target=self._keepalive, daemon=True, name="tinvest-keepalive").start()
+        if not net.relay_enabled() and not net.ru_proxy():   # напрямую из-за границы: держим соединение тёплым; через ретранслятор не нужно
+            threading.Thread(target=self._keepalive, daemon=True, name="tinvest-keepalive").start()
 
     def _keepalive(self):
         """Держим соединение с API тёплым: новое соединение с сервера устанавливается с нескольких попыток."""
@@ -253,7 +254,7 @@ class MoexExchange:
                 out[sym] = max(vals) if vals else 0.0
             except Exception as e:  # noqa: BLE001
                 log.debug("оборот %s: %s", sym, e)
-            time.sleep(0.4)    # бережный ритм: защита T-Bank от DDoS реагирует на частые соединения
+            time.sleep(1.0)    # фоновый расчёт не должен занимать общий лимит ретранслятора: ~60 запросов/мин
         log.info("Оборот по свечам T-Invest: %d инструментов за %.0f с", len(out), time.time() - t0)
         return out
 
