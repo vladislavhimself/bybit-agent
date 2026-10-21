@@ -195,13 +195,12 @@ class MoexExchange:
         now = time.time()
         if self._turn_cache and now - self._turn_ts < 3 * 3600:
             return self._turn_cache
-        if self._turn_cache:
-            # есть прошлый срез: обновляем в фоне, чтобы не держать главный цикл (по свечам это 2-3 минуты)
-            if not (self._turn_thread and self._turn_thread.is_alive()):
-                self._turn_thread = threading.Thread(target=self._refresh_turnover, daemon=True, name="turnover")
-                self._turn_thread.start()
-            return self._turn_cache
-        return self._refresh_turnover()
+        # обороты считаются в фоне всегда (по свечам это 5-10 минут при бережном ритме): главный цикл не ждёт.
+        # Пока среза нет, вселенная = обязательный список (always) и бумаги из новостей.
+        if not (self._turn_thread and self._turn_thread.is_alive()):
+            self._turn_thread = threading.Thread(target=self._refresh_turnover, daemon=True, name="turnover")
+            self._turn_thread.start()
+        return self._turn_cache
 
     def _refresh_turnover(self):
         now = time.time()
