@@ -19,7 +19,7 @@ from .calendar import Calendar
 from .config import LOGS, MARKET_FILE, Settings, ROOT
 from .exchange import Exchange
 from .moex import MoexExchange
-from . import fmt
+from . import article, fmt
 from .executor import Executor
 from .journal import Journal
 from .macro import MarketMood
@@ -28,6 +28,7 @@ from .notify import Telegram
 from .playbook import Playbook
 from .review import Reviewer
 from .risk import RiskManager
+from .analytics import Analytics
 from .shadow import ShadowBook
 from .signals import build_signal
 from .ta import snapshot
@@ -67,11 +68,15 @@ class Bot:
         self.exe = Executor(self.s, self.ex, self.risk, self.j, self.tg)
         self.whales = WhaleFlows(self.j)
         self.shadow = ShadowBook(self.s, self.j, self.ex)
+        self.analytics = Analytics(self.j, self.s)
+        fmt.NAMES = self._names()
         self.exe.shadow = self.shadow
         self.mood = MarketMood()
         self.analyst = (Analyst(self.s, self.j, self.playbook, self.cal, self.whales, self.mood)
                         if self.s.has_anthropic else None)
         self.reviewer = Reviewer(self.s, self.j, self.tg) if self.s.has_anthropic else None
+        if self.reviewer:
+            self.reviewer.analytics = self.analytics
         if self.reviewer:
             self.reviewer.shadow = self.shadow   # разбор учитывает и теневые сделки
         self.news = NewsCollector(self.ex, self.j, self.s)
@@ -141,7 +146,12 @@ class Bot:
                     continue
                 if not self.analyst.prefilter(it["title"], it["summary"]):
                     continue
-                ev = self.analyst.classify(it["title"], it["summary"], it["source"], lessons)
+                body = it["summary"]
+                if not it["source"].startswith("tg:") and self.s.get("news.full_text", True):
+                    full = article.fetch_text(it.get("url"))
+                    if full:
+                        body = full   # статья целиком: направление часто ясно только из тела, а не из заголовка
+                ev = self.analyst.classify(it["title"], body, it["source"], lessons)
             if not ev or not ev["relevant"] or ev["already_priced"]:
                 continue
             self.j.add_event(it["id"], it["published_ts"], ev, it["title"])
@@ -442,6 +452,10 @@ class Bot:
                 f, bw = self.last_funnel
                 self.tg.send("Последний скан, почему нет входа:\n"
                              + fmt.funnel_text(f, bw, self.s.get("signals.entry_threshold"), top=8))
+            elif c == "/analytics":
+                parts = cmd.split()
+                days = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 30
+                self.tg.send(self.analytics.text(days), html=True)
             elif c == "/log":
                 # последние строки журнала: нужны, когда к машине нет доступа по SSH
                 try:
@@ -471,12 +485,34 @@ class Bot:
                 except Exception as e:  # noqa: BLE001
                     self.tg.send(f"Обновление не удалось: {e}")
             elif c == "/help":
-                self.tg.send("/status /why /shadow /market /stop /panic /resume /review /approve /lessons /calendar /log /update")
+                self.tg.send("/status /why /shadow /analytics /market /stop /panic /resume /review /approve /lessons /calendar /log /update")
 
     def _auto_apply(self):
         return bool(self.s.get("learning.auto_apply")) and self.s.mode != "live"
 
     # ---------- цикл ----------
+    def _names(self):
+        """Тикер -> название компании для сообщений: по списку инструментов биржи (Мосбиржа)."""
+        names = {}
+        try:
+            inst = self.ex.instruments() if self.market == "moex" else {}
+        except Exception as e:  # noqa: BLE001
+            log.warning("названия инструментов: %s", e)
+            return names
+        share_names = {i["base"]: i.get("name", "") for i in inst.values() if i["kind"] == "share"}
+        idx = {"IMOEX": "индекс Мосбиржи", "RTS": "индекс РТС"}
+        for sym, i in inst.items():
+            if i["kind"] == "share":
+                names[sym] = i.get("name", "")
+            else:
+                base = share_names.get(i["base"]) or idx.get(i["base"]) or i["base"]
+                if i.get("expiration"):
+                    d = i["expiration"]
+                    names[sym] = f"{base}, фьючерс до {d[8:10]}.{d[5:7]}.{d[:4]}"
+                else:
+                    names[sym] = f"{base}, вечный фьючерс"
+        return {k: v for k, v in names.items() if v}
+
     def run(self):
         iv = self.s.get("intervals")
         self.cal.refresh(force=True)

@@ -34,6 +34,8 @@ class NewsEvent(BaseModel):
     is_rumor: bool           # слух, не подтверждено первоисточником
     crowd_reaction: Literal["panic", "euphoria", "sell_the_news", "capitulation_done", "neutral"]
     contrarian_risk: float   # 0..1: вероятность, что толпа отреагирует ПРОТИВ очевидного смысла новости
+    expected: str            # чего ждал рынок/консенсус до новости (из текста: "аналитики ожидали", "консенсус"), иначе ""
+    surprise: float          # -1..1: факт относительно ожиданий (+ лучше ожиданий, − хуже, 0 совпало или ожиданий нет)
     reasoning: str
 
 
@@ -73,6 +75,12 @@ SYSTEM_NEWS = """Ты аналитик крипторынка внутри ав�
   выкупаться. Смотри на настроение и ход цены, а не только на знак новости;
 - contrarian_risk: честная оценка, что рынок пойдёт против очевидного прочтения новости. 0.1-0.2 для
   неожиданных сильных событий, 0.5+ для ожидаемых и уже отыгранных;
+- ОЖИДАНИЯ: рынок двигает не сама новость, а её отличие от ожиданий. Ищи в тексте, чего ждали (консенсус-прогноз,
+  «аналитики ожидали», «рынок закладывал», прогноз компании, прошлый квартал как база) и заполняй expected (коротко)
+  и surprise: +0.5..+1 заметно лучше ожиданий, −0.5..−1 заметно хуже, около 0 — совпало или ожиданий в тексте нет.
+  Если факт совпал с ожиданиями, событие в основном уже в цене: already_priced или низкая importance.
+  Если факт расходится с ожиданиями, direction задаётся знаком surprise, даже если заголовок звучит иначе
+  («прибыль выросла на 10%» при ожидании +30% = bearish);
 - reasoning: 1-2 предложения на русском, включая психологический довод, если он есть."""
 
 SYSTEM_SETUP = """Ты опытный трейдер-риск-менеджер. Бот собрал сетап с высокой уверенностью и хочет войти увеличенным
@@ -217,6 +225,18 @@ class Analyst:
         d["horizon_hours"] = max(1, min(96, int(d["horizon_hours"])))
         d["affected_symbols"] = [s.upper().strip() for s in d["affected_symbols"] if s.strip()][:10]
         d["contrarian_risk"] = max(0.0, min(1.0, float(d.get("contrarian_risk") or 0.0)))
+        d["surprise"] = max(-1.0, min(1.0, float(d.get("surprise") or 0.0)))
+        d["expected"] = (d.get("expected") or "")[:200]
+        if d["expected"] and abs(d["surprise"]) >= 0.5:
+            # новость расходится с ожиданиями: торгуем расхождение, а не заголовок
+            want = "bullish" if d["surprise"] > 0 else "bearish"
+            if d["direction"] != want:
+                d["reasoning"] = f"Расхождение с ожиданиями ({d['expected']}): {d['reasoning']}"
+            d["direction"] = want
+            d["confidence"] = max(d["confidence"], 0.7)
+            d["already_priced"] = False
+        elif d["expected"] and abs(d["surprise"]) < 0.15 and d["event_type"] in ("earnings", "macro"):
+            d["confidence"] *= 0.7   # совпало с ожиданиями: движение в основном уже в цене
         if d["crowd_reaction"] == "sell_the_news" and d["direction"] == "bullish":
             d["confidence"] *= 0.6
         if d["crowd_reaction"] == "capitulation_done" and d["direction"] == "bearish":

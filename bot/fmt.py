@@ -37,8 +37,18 @@ def clean(text, limit=90):
     return t[:limit] + ("…" if len(t) > limit else "")
 
 
+NAMES = {}   # тикер -> человеческое название (заполняет main из списка инструментов биржи)
+
+
 def base_of(symbol):
     return symbol[:-4] if symbol.endswith("USDT") else symbol
+
+
+def label(symbol):
+    """Тикер плюс название: «NVZ6 (Новатэк, фьючерс до 17.12.2026)»."""
+    base = base_of(symbol)
+    name = NAMES.get(symbol) or NAMES.get(base)
+    return f"{base} ({name})" if name else base
 
 
 def short_reasons(sig, ta=None, limit=3):
@@ -92,7 +102,7 @@ def entry_message(sig, entry, qty, lev, stop, plan, risk_pct, risk_usd, tradable
     tps = " / ".join(f"{l['price']:g}" for l in plan) if plan else "нет, только трейлинг"
     unit = "лот." if mult != 1.0 else base
     parts = [
-        f"{head}: <b>{esc(base)} {side}</b>",
+        f"{head}: <b>{esc(label(sig.symbol))} {side}</b>",
         block("Направление", f"{side}, размер {TIER_RU.get(sig.tier, sig.tier)}, плечо {lev}x"),
         block("Вход", f"{entry:g}, объём {qty:g} {esc(unit)} (~{money(notional)} {CUR})"
               + (f", комиссия входа {money(fee)} {CUR}" if fee else "")),
@@ -110,7 +120,7 @@ def close_message(t, pnl, pnl_r, reason, tradable=None, fees=None):
     emoji = "✅" if pnl > 0 else "❌"
     fee_txt = f"с учётом комиссии {money(fees, 2)} {CUR}" if fees else "с учётом комиссии"
     parts = [
-        f"{emoji} ВЫХОД: <b>{esc(base)} {side}</b>",
+        f"{emoji} ВЫХОД: <b>{esc(label(t['symbol']))} {side}</b>",
         block("Результат", f"{signed(pnl)} {CUR} ({pnl_r:+.2f}R), {fee_txt}"),
         block("Причина", esc(reason)),
     ]
@@ -132,7 +142,7 @@ def balance_message(equity, m, positions, stats, cap, llm=None, next_macro=None,
     if m["halted"] and halted_hint:
         parts.append(f"⛔ <b>Остановлен</b>: {esc(m['halt_reason'])}. /resume чтобы продолжить")
     if pendings:
-        parts.append(block("Ждут отката", *[f"• {esc(base_of(p['symbol']))} {'ЛОНГ' if p['side'] == 'Buy' else 'ШОРТ'} @ {p['price']:g}"
+        parts.append(block("Ждут отката", *[f"• {esc(label(p['symbol']))} {'ЛОНГ' if p['side'] == 'Buy' else 'ШОРТ'} @ {p['price']:g}"
                                             for p in pendings]))
     if positions:
         lines = []
@@ -140,7 +150,7 @@ def balance_message(equity, m, positions, stats, cap, llm=None, next_macro=None,
             side = "ЛОНГ" if p["side"] == "Buy" else "ШОРТ"
             notional = p["qty"] * p["entry"] * (p.get("mult") or 1.0)
             pct = f" ({p['upnl'] / notional * 100:+.2f}%)" if notional else ""
-            lines.append(f"• {esc(base_of(p['symbol']))} {side} {p['qty']:g} @ {p['entry']:g}")
+            lines.append(f"• {esc(label(p['symbol']))} {side} {p['qty']:g} @ {p['entry']:g}")
             lines.append(f"   сейчас {signed(p['upnl'])} {CUR}{pct}, цена {p['mark']:g}, плечо {p['leverage']:.1f}x, стоп {p['sl']:g}")
         parts.append(block("Позиции", *lines))
     else:

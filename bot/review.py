@@ -45,6 +45,7 @@ class Reviewer:
         self.client = anthropic.Anthropic(max_retries=3, timeout=180.0)
         self.model = settings.get("llm.review_model")
         self.shadow = None   # ShadowBook, подключается из main
+        self.analytics = None   # Analytics, подключается из main
 
     def lessons_text(self, limit=15):
         rows = self.j.lessons(limit)
@@ -56,6 +57,9 @@ class Reviewer:
         trades = [t for t in self.j.closed_trades(40) if t["closed_ts"] > last_ts]
         last_sh = self.j.kv_get("last_shadow_review_ts", 0)
         sh_text, sh_new = self.shadow.review_block(last_sh) if self.shadow else ("", 0)
+        if getattr(self, "analytics", None):
+            sh_text += ("\n\nАналитика за 30 дней (разрезы по причинам отказа, часам МСК, режиму, силе сигнала, "
+                        "ширине стопа и MFE; findings — выводы по правилам): " + self.analytics.review_json(30))
         need_sh = (self.s.get("shadow") or {}).get("min_for_review", 20)
         if len(trades) < 5 and sh_new < need_sh:
             log.info("Разбор: новых закрытых сделок %d (нужно 5), новых теневых %d (нужно %d), пропуск",

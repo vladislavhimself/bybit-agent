@@ -10,3 +10,6 @@ class_name = "Broker"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Broker"]
+
+[triggers]
+crons = ["*/5 * * * *"]

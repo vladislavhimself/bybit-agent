@@ -43,6 +43,9 @@ sources:
                      lookonchain, whale_alert, PeckShieldAlert, zachxbt, ArkhamIntel]
   twitter_poll_sec: 120
 
+news:
+  full_text: true                # читать статью целиком по ссылке (кроме Telegram), а не только анонс из RSS
+
 intervals:
   news_poll_sec: 20              # Telegram опрашивается каждые 20 с, RSS/анонсы раз в минуту
   scan_sec: 300

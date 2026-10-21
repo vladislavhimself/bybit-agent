@@ -82,7 +82,7 @@ class Executor:
                 order_id = self.ex.place_market(sig.symbol, side, qty, sl=stop)
             except Exception as ex:  # noqa: BLE001
                 log.error("%s: ошибка открытия: %s", sig.symbol, ex)
-                self.tg.send(f"⚠️ Не удалось открыть {fmt.base_of(sig.symbol)} {sig.direction}: {str(ex)[:120]}")
+                self.tg.send(f"⚠️ Не удалось открыть {fmt.label(sig.symbol)} {sig.direction}: {str(ex)[:120]}")
                 return None
             sig.reasons.append("вход по рынку: " + why)
             return self._finish_entry(sig, ta["atr"], dist, lev, order_id, equity, price, qty)
@@ -101,7 +101,7 @@ class Executor:
             order_id = self.ex.place_limit(sig.symbol, side, qty, limit, reduce_only=False)
         except Exception as ex:  # noqa: BLE001
             log.error("%s: ошибка лимитного ордера: %s", sig.symbol, ex)
-            self.tg.send(f"⚠️ Не удалось выставить ордер {fmt.base_of(sig.symbol)} {sig.direction}: {str(ex)[:120]}")
+            self.tg.send(f"⚠️ Не удалось выставить ордер {fmt.label(sig.symbol)} {sig.direction}: {str(ex)[:120]}")
             return None
         wait = int(e.get("wait_minutes", 90))
         sig.reasons.append("вход на откате: " + why)
@@ -110,7 +110,7 @@ class Executor:
         self.j.add_pending({"symbol": sig.symbol, "side": side, "qty": qty, "price": limit, "stop": stop,
                             "order_id": order_id, "expires_ts": int(time.time()) + wait * 60,
                             "event_key": sig.event_key, "payload": payload})
-        base = fmt.base_of(sig.symbol)
+        base = fmt.label(sig.symbol)
         self.tg.send("\n\n".join([
             f"⏳ ОРДЕР НА ОТКАТ: <b>{fmt.esc(base)} {'ЛОНГ' if long else 'ШОРТ'}</b>",
             fmt.block("Направление", f"{'ЛОНГ' if long else 'ШОРТ'}, размер {fmt.TIER_RU.get(sig.tier, sig.tier)}, плечо {lev}x"),
@@ -193,7 +193,7 @@ class Executor:
                                            pull_atr=pay.get("pull"))
                     except Exception as e:  # noqa: BLE001
                         log.warning("теневая сделка: %s", e)
-                self.tg.send(f"⌛ {fmt.base_of(p['symbol'])}: откат к {p['price']:g} не случился, ордер снят без сделки")
+                self.tg.send(f"⌛ {fmt.label(p['symbol'])}: откат к {p['price']:g} не случился, ордер снят без сделки")
 
     def cancel_pendings(self, reason, symbols=None):
         n = 0
@@ -240,7 +240,7 @@ class Executor:
                 self.j.update_partial(t["id"], pos["qty"], new_hits)
                 if new_hits > hits:
                     self.tg.send("\n\n".join([
-                        f"💰 ЧАСТИЧНЫЙ ТЕЙК: <b>{fmt.esc(fmt.base_of(sym))}</b>",
+                        f"💰 ЧАСТИЧНЫЙ ТЕЙК: <b>{fmt.esc(fmt.label(sym))}</b>",
                         fmt.block("Исполнено", f"Тейк {new_hits} по {mark:g}"),
                         fmt.block("Остаток", f"{pos['qty']:g}, стоп переносится в безубыток"),
                     ]), html=True)
@@ -404,7 +404,7 @@ class Executor:
                 pnl, exit_price, _fees = res
                 self.j.update_pnl(t["id"], exit_price, pnl, t["close_reason"].split(" (результат")[0])
                 log.info("%s: результат уточнён: %+.2f %s", t["symbol"], pnl, fmt.CUR)
-                self.tg.send(f"ℹ️ Уточнение по {fmt.base_of(t['symbol'])}: результат {pnl:+.2f} {fmt.CUR}")
+                self.tg.send(f"ℹ️ Уточнение по {fmt.label(t['symbol'])}: результат {pnl:+.2f} {fmt.CUR}")
 
     def close_all(self, reason):
         n = self.cancel_pendings(reason)
