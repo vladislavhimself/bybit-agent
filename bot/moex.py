@@ -15,6 +15,7 @@ import pandas as pd
 import requests
 
 from . import net
+from .config import DATA
 
 log = logging.getLogger("moex")
 ROOT = Path(__file__).resolve().parent.parent
@@ -96,6 +97,19 @@ class MoexExchange:
         raise RuntimeError(f"{svc}.{method}: лимит запросов")
 
     def _ensure_account(self):
+        cache = DATA / f"moex_account_{self.mode}.txt"
+        try:
+            self._ensure_account_online()
+            cache.write_text(self.account, encoding="utf-8")
+        except Exception as e:  # noqa: BLE001
+            if not cache.exists():
+                raise
+            # брокер/ретранслятор недоступен при старте: поднимаемся по сохранённому номеру счёта,
+            # чтобы бот отвечал на команды и сообщал о проблеме, а не падал в перезапуски
+            self.account = cache.read_text(encoding="utf-8").strip()
+            log.error("T-Invest недоступен при старте (%s), счёт %s из кэша", str(e)[:100], self.account)
+
+    def _ensure_account_online(self):
         if self.mode == "live":
             accs = self.call("UsersService", "GetAccounts").get("accounts", [])
             accs = [a for a in accs if a.get("status") == "ACCOUNT_STATUS_OPEN" and a.get("type") == "ACCOUNT_TYPE_TINKOFF"]
