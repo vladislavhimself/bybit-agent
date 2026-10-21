@@ -121,6 +121,17 @@ class MoexExchange:
     def instruments(self, max_age=3600):
         if self._inst and time.time() - self._inst_ts < max_age:
             return self._inst
+        if self._inst:
+            # справочник уже есть: при сбое связи оставляем старый, а не роняем весь цикл
+            try:
+                return self._load_instruments()
+            except Exception as e:  # noqa: BLE001
+                log.warning("обновление справочника инструментов не удалось (%s), работаю по старому", str(e)[:100])
+                self._inst_ts = time.time() - max_age + 300   # повторить через 5 минут
+                return self._inst
+        return self._load_instruments()
+
+    def _load_instruments(self):
         out = {}
         shares = self.call("InstrumentsService", "Shares", {"instrumentStatus": "INSTRUMENT_STATUS_BASE"})["instruments"]
         for it in shares:

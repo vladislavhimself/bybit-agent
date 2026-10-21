@@ -83,6 +83,7 @@ class Bot:
         if self.reviewer:
             self.reviewer.shadow = self.shadow   # разбор учитывает и теневые сделки
         self.news = NewsCollector(self.ex, self.j, self.s)
+        self.last_known, self.last_known_ts, self.broker_down_since = None, time.time(), None
         self.expect = self.crowd = None
         if self.market == "moex":
             self.news.disclosure = Disclosure(self.s, self.ex)
@@ -548,10 +549,29 @@ class Bot:
                 self.mood.refresh()
                 if self.expect and self.expect.due(now):
                     self.expect.refresh(now)
-                bal = self.ex.balances()
-                equity = bal["equity"]
-                positions = self.ex.positions()
-                self.risk.check(equity, realized=bal["wallet"])
+                try:
+                    bal = self.ex.balances()
+                    equity = bal["equity"]
+                    positions = self.ex.positions()
+                    self.last_known = (equity, positions, bal)
+                    self.risk.check(equity, realized=bal["wallet"])
+                except Exception as e:  # noqa: BLE001
+                    # биржа/ретранслятор недоступны: команды из Telegram всё равно обрабатываем по последним данным
+                    if not getattr(self, "last_known", None):
+                        raise
+                    equity, positions, bal = self.last_known
+                    self.broker_down_since = getattr(self, "broker_down_since", None) or now
+                    log.error("Биржа недоступна (%s), работаю по последним данным от %s",
+                              str(e)[:120], time.strftime("%H:%M:%S", time.gmtime(self.last_known_ts)))
+                    self.handle_commands(equity, positions)
+                    if now - self.broker_down_since > 600 and now - self.last.get("broker_alert", 0) > 1800:
+                        self.last["broker_alert"] = now
+                        self.tg.send("⚠️ Нет связи с брокером уже больше 10 минут: котировки и ордера недоступны, "
+                                     "позиции под стоп-заявками брокера. Команды принимаю, сделки не открываю.")
+                    time.sleep(iv.get("loop_sleep_sec", 10))
+                    continue
+                self.last_known_ts = now
+                self.broker_down_since = None
                 self.handle_commands(equity, positions)
                 self.handle_events(equity, positions)
 
