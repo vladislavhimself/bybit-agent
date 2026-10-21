@@ -78,7 +78,7 @@ class NewsCollector:
         self.first_run = True
         self.last = {"rss": 0.0, "binance": 0.0, "bybit": 0.0, "cryptopanic": 0.0}
         self.tg_channels = settings.get("sources.telegram_channels") or []
-        self.session = requests.Session()
+        self.session = net.session()   # российские ленты через ретранслятор, если он настроен
         self.session.headers.update(UA)
         self.last.update({"truth": 0.0, "twitter": 0.0})
         self.twitter_since_id = None
@@ -112,7 +112,7 @@ class NewsCollector:
         items = []
         for name, url in (self.s.get("sources.rss") or RSS_SOURCES).items():
             try:
-                r = self.session.get(url, timeout=15, proxies=net.proxies_for(url))   # российские ленты через ретранслятор
+                r = self.session.get(url, timeout=15)
                 feed = feedparser.parse(r.content)
                 for e in feed.entries:
                     ts = _rss_ts(e)
