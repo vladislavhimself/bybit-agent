@@ -161,14 +161,13 @@ class ShadowBook:
         return sid
 
     def _bars(self, symbol, start_ms, end_ms):
-        r = self.ex.market.get_kline(category="linear", symbol=symbol, interval="5", start=int(start_ms),
-                                     end=int(end_ms), limit=1000)
-        rows = r["result"]["list"]
-        if not rows:
+        """5-минутные свечи от сигнала до end_ms через общий интерфейс биржи (Bybit и Мосбиржа)."""
+        need = int((end_ms - start_ms) / 300_000) + 3
+        df = self.ex.klines(symbol, "5", min(max(need, 10), 1000), end=int(end_ms))
+        if df is None or len(df) == 0:
             return pd.DataFrame(columns=["ts", "open", "high", "low", "close"])
-        df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume", "turnover"]).astype(float)
+        df = df[["ts", "open", "high", "low", "close"]].astype(float)
         df["ts"] = df["ts"].astype("int64")
-        df = df.iloc[::-1]
         # свеча, начавшаяся до сигнала, не считается: вход только после сигнала
         return df[df["ts"] >= start_ms].reset_index(drop=True)
 
