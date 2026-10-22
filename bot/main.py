@@ -31,6 +31,7 @@ from .risk import RiskManager
 from .analytics import Analytics
 from .crowd import Crowd
 from .disclosure import Disclosure
+from .eventplay import EventPlay
 from .expectations import ExpectationsMemory
 from .shadow import ShadowBook
 from .signals import build_signal
@@ -84,8 +85,9 @@ class Bot:
             self.reviewer.shadow = self.shadow   # разбор учитывает и теневые сделки
         self.news = NewsCollector(self.ex, self.j, self.s)
         self.last_known, self.last_known_ts, self.broker_down_since = (0.0, [], {"wallet": 0.0}), time.time(), None   # до первого ответа биржи
-        self.expect = self.crowd = None
+        self.expect = self.crowd = self.eventplay = None
         if self.market == "moex":
+            self.eventplay = EventPlay(self)
             self.news.disclosure = Disclosure(self.s, self.ex)
             if self.analyst:
                 self.expect = ExpectationsMemory(self.s, self.j, self.analyst, self.cal)
@@ -131,6 +133,8 @@ class Bot:
                     next_poll = time.time() + interval
                     fresh += self.news.poll()
                 if fresh:
+                    if self.eventplay:
+                        self.eventplay.flash(fresh)   # решение ЦБ: за секунды, без очереди к модели
                     self.process_news(fresh)
             except Exception as e:  # noqa: BLE001
                 log.error("Поток новостей: %s\n%s", e, traceback.format_exc())
@@ -382,6 +386,10 @@ class Bot:
         self.evaluate(universe, equity, positions, tag="скан")
 
     def handle_events(self, equity, positions):
+        if self.eventplay and self.eventplay.blocked():
+            while not self.events_q.empty():
+                self.events_q.get_nowait()
+            return
         """События из потока новостей: закрыть контр-позиции и сразу оценить затронутые монеты."""
         new = []
         while True:
@@ -596,9 +604,13 @@ class Bot:
                     closed = self.exe.manage()
                     self.closed_since_review += len(closed)
                     self.exe.reconcile()
+                event_block = self.eventplay.tick(now, equity, positions) if self.eventplay else False
                 if now - self.last["scan"] >= iv["scan_sec"]:
                     self.last["scan"] = now
-                    self.step_scan(equity, self.ex.positions())
+                    if event_block:
+                        log.info("скан: входы запрещены до решения ЦБ")
+                    else:
+                        self.step_scan(equity, self.ex.positions())
                 if now - self.last["report"] >= iv["balance_report_hours"] * 3600:
                     self.last["report"] = now
                     self.step_report(equity, positions)

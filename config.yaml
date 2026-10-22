@@ -170,6 +170,8 @@ markets:
       big_trade_rub_future: 1000000
       allowed_future_bases: [IMOEX, RTS]   # индексные фьючерсы; остальные фьючерсы только на акции
       trading_hours: [["07:05", "23:30"]]   # московское время; аукцион открытия и последние минуты не трогаем
+      cbr_consensus: null               # консенсус по ставке перед заседанием ЦБ (%), если память ожиданий не нашла; null = из новостей
+      event_symbols: [IMOEXF, SBERF]    # чем торгуем расхождение решения ЦБ с консенсусом
     sources:
       exchange_announcements: false
       twitter_mode: "off"

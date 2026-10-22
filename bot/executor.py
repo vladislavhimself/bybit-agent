@@ -45,6 +45,8 @@ class Executor:
     def _entry_mode(self, sig, ta):
         """market: входить сразу; pullback: ждать откат лимитным ордером."""
         e = self.s.get("entry") or {}
+        if getattr(sig, "force_market", False):
+            return "market", "сценарий события: вход сразу"
         if e.get("mode", "pullback") != "pullback":
             return "market", "режим market"
         long = sig.direction == "long"
