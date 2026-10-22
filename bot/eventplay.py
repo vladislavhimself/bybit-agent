@@ -4,8 +4,9 @@
 2. Решение ловим регулярным выражением в сырых новостях (Telegram опрашивается каждые 20 с) — без модели,
    за секунды. Сравниваем с консенсусом (память ожиданий или moex.cbr_consensus в config).
 3. Факт мягче консенсуса (ставка ниже ожиданий) → лонг индекса и Сбера по рынку; жёстче → шорт.
-   Совпало с консенсусом → сделки нет: движение уже в цене, розница отыграет и откатит.
-Сделка одна на событие, размер medium, выходы стандартные (защита прибыли, трейлинг)."""
+   Совпало с консенсусом → сделки нет, кроме ожидаемого снижения: на истории 2022-2026 (16 снижений) рынок
+   через сутки ниже в 75% случаев («продавай новость») → малый шорт.
+Сделка одна на событие, выходы стандартные (защита прибыли, трейлинг)."""
 import logging
 import re
 import time
@@ -45,9 +46,10 @@ class EventPlay:
             if key not in self.flat_done:
                 self.flat_done.add(key)
                 n = self.b.exe.close_all("за 20 минут до решения ЦБ: через событие позиции не держим")
-                self.b.tg.send("\n\n".join([f"🏦 <b>РЕШЕНИЕ ЦБ ЧЕРЕЗ {int((e['ts'] - now) / 60)} МИН</b>",
-                                             fmt.block("Сделано", f"Закрыл позиции и ордера ({n}), новых входов не будет до решения"),
-                                             fmt.block("Консенсус", fmt.esc(self._consensus_text()))]), html=True)
+                self.b.tg.send("\n\n".join([
+                    f"🏦 <b>РЕШЕНИЕ ЦБ ЧЕРЕЗ {int((e['ts'] - now) / 60)} МИН</b>",
+                    fmt.block("Сделано", f"Закрыл позиции и ордера ({n}), новых входов не будет до решения"),
+                    fmt.block("Консенсус", fmt.esc(self._consensus_text()))]), html=True)
         return now < self.block_until
 
     def blocked(self, now=None):
@@ -96,35 +98,50 @@ class EventPlay:
             self.traded.add(day)
             self.block_until = 0.0
             cons, src = self.consensus()
+            src_line = fmt.block("Источник", fmt.esc(it.get("title", "")[:200]))
             log.info("Решение ЦБ: %.2f%% (консенсус %s) — %s", actual, cons, it.get("title", "")[:80])
             if cons is None:
-                self.b.tg.send("\n\n".join([f"🏦 <b>РЕШЕНИЕ ЦБ: {actual:g}%</b>", fmt.block("Сделка", "нет: консенсус не известен"),
-                                             fmt.block("Источник", fmt.esc(it.get('title', '')[:200]))]), html=True)
+                self.b.tg.send("\n\n".join([f"🏦 <b>РЕШЕНИЕ ЦБ: {actual:g}%</b>", fmt.block("Сделка", "нет: консенсус не известен"), src_line]), html=True)
                 return True
             surprise = cons - actual   # + = мягче ожиданий (бычье), − = жёстче (медвежье)
+            prev = self.b.s.get("moex.cbr_current_rate")
             if abs(surprise) < 0.25:
-                self.b.tg.send("\n\n".join([f"🏦 <b>РЕШЕНИЕ ЦБ: {actual:g}%</b>", fmt.block("Консенсус", f"{cons:g}% — совпало"),
-                                             fmt.block("Сделка", "нет: движение уже в цене"), fmt.block("Источник", fmt.esc(it.get('title', '')[:200]))]), html=True)
+                if prev and actual < float(prev) - 1e-9 and self.b.s.get("moex.cbr_sell_expected_cut", True):
+                    # ожидаемое снижение на истории продают: 16 снижений 2022-2026, через сутки SBER ниже в 75% случаев
+                    self.b.tg.send("\n\n".join([
+                        f"🏦 <b>РЕШЕНИЕ ЦБ: {actual:g}%</b>",
+                        fmt.block("Консенсус", f"{cons:g}% — совпало, но это ожидаемое снижение"),
+                        fmt.block("Сделка", "Малый шорт по рынку: на истории ожидаемое снижение продают («продавай новость», 75% случаев)"),
+                        src_line]), html=True)
+                    self._enter("short", "low", f"ожидаемое снижение ставки до {actual:g}%: на истории продают (SBER ниже через сутки в 75% случаев)", day)
+                    return True
+                self.b.tg.send("\n\n".join([
+                    f"🏦 <b>РЕШЕНИЕ ЦБ: {actual:g}%</b>", fmt.block("Консенсус", f"{cons:g}% — совпало"),
+                    fmt.block("Сделка", "нет: движение уже в цене"), src_line]), html=True)
                 return True
             direction = "long" if surprise > 0 else "short"
             reason = f"решение ЦБ {actual:g}% против консенсуса {cons:g}% ({'мягче' if surprise > 0 else 'жёстче'} на {abs(surprise):g} п.п.)"
-            self.b.tg.send("\n\n".join([f"🏦 <b>РЕШЕНИЕ ЦБ: {actual:g}%</b>",
-                                         fmt.block("Консенсус", f"{cons:g}% — факт {'МЯГЧЕ' if surprise > 0 else 'ЖЁСТЧЕ'} ожиданий на {abs(surprise):g} п.п."),
-                                         fmt.block("Сделка", f"Вхожу {'в лонг' if direction == 'long' else 'в шорт'} по рынку: {', '.join(self.symbols)}"),
-                                         fmt.block("Источник", fmt.esc(it.get('title', '')[:200]))]), html=True)
-            equity, positions, _ = self.b.last_known
-            for sym in self.symbols:
-                try:
-                    ta, tk, oi = self.b.market_data(sym, max_age=0)
-                    if not ta:
-                        continue
-                    sig = Signal(symbol=sym, direction=direction, strength=0.9, tier="medium",
-                                 components={"news": 0.9 if direction == "long" else -0.9, "ta": 0.0, "positioning": 0.0, "total": 0.9},
-                                 reasons=[reason], regime=ta.get("regime", ""), news_driven=True, events=[], event_key=f"cbr-{day}")
-                    sig.force_market = True
-                    tid = self.b.exe.open(sig, ta, equity, positions)
-                    log.info("Сделка по решению ЦБ %s %s -> %s", sym, direction, tid)
-                except Exception as ex:  # noqa: BLE001
-                    log.error("вход по решению ЦБ %s: %s", sym, ex)
+            self.b.tg.send("\n\n".join([
+                f"🏦 <b>РЕШЕНИЕ ЦБ: {actual:g}%</b>",
+                fmt.block("Консенсус", f"{cons:g}% — факт {'МЯГЧЕ' if surprise > 0 else 'ЖЁСТЧЕ'} ожиданий на {abs(surprise):g} п.п."),
+                fmt.block("Сделка", f"Вхожу {'в лонг' if direction == 'long' else 'в шорт'} по рынку: {', '.join(self.symbols)}"),
+                src_line]), html=True)
+            self._enter(direction, "medium", reason, day)
             return True
         return False
+
+    def _enter(self, direction, tier, reason, day):
+        equity, positions, _ = self.b.last_known
+        for sym in self.symbols:
+            try:
+                ta, tk, oi = self.b.market_data(sym, max_age=0)
+                if not ta:
+                    continue
+                sig = Signal(symbol=sym, direction=direction, strength=0.9, tier=tier,
+                             components={"news": 0.9 if direction == "long" else -0.9, "ta": 0.0, "positioning": 0.0, "total": 0.9},
+                             reasons=[reason], regime=ta.get("regime", ""), news_driven=True, events=[], event_key=f"cbr-{day}")
+                sig.force_market = True
+                tid = self.b.exe.open(sig, ta, equity, positions)
+                log.info("Сделка по решению ЦБ %s %s -> %s", sym, direction, tid)
+            except Exception as ex:  # noqa: BLE001
+                log.error("вход по решению ЦБ %s: %s", sym, ex)

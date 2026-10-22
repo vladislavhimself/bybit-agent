@@ -149,6 +149,14 @@ print("\n== Застой и время в сделке ==")
 for st, mh in ((12, 48), (24, 48), (0, 48), (12, 96), (0, 96)):
     report(run(feats, stall_h=st, max_h=mh), f"застой {st or 'выкл'}ч, максимум {mh}ч")
 
+print("\n== Принятый вариант по годам (устойчивость) ==")
+best = run(feats, stop_mult=2.0, tps=((1.5, 0.25), (2.5, 0.35)), gb_r=1.2, gb_min=1.5, be_r=0.7, max_h=96)
+for y, g in best.groupby(best.t.dt.year):
+    report(g, f"   {y}")
+old_cfg = run(feats)
+for y, g in old_cfg.groupby(old_cfg.t.dt.year):
+    report(g, f"   {y} (как было)")
+
 print("\n== Комбинации ==")
 combos = {
     "стоп 3.0, тейк 1.5x0.3, защита 0.9/1.0, безуб 1.0": dict(stop_mult=3.0, tps=((1.5, 0.3), (3.0, 0.3)), gb_r=0.9, gb_min=1.0, be_r=1.0),
