@@ -146,6 +146,11 @@ def build_signal(symbol, base, ta, ticker, oi_hist, events, params, now=None, pl
         preasons.append("против дневного тренда: сила x0.85")
     if ta.get("timing_15m", 0) != 0 and (ta["timing_15m"] > 0) != (sign > 0):
         strength *= 0.85  # 15-минутный импульс против нас: ждём лучшей точки
+    ta_long_mult = float((p or {}).get("ta_long_mult", 1.0) or 1.0)
+    if sign > 0 and abs(ns) < 0.3 and ta_long_mult != 1.0:
+        # Мосбиржа 2019-2026: технические лонги PF 0.83, шорты PF 1.16 — лонгу без новости нужен запас силы
+        strength *= ta_long_mult
+        preasons.append(f"технический лонг на Мосбирже слабее шорта: сила x{ta_long_mult:g}")
 
     if diag is not None:
         diag.update(direction="long" if sign > 0 else "short", comps=comps, news_driven=abs(ns) >= 0.3,

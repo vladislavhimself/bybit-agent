@@ -231,6 +231,7 @@ markets:
       max_hours_in_trade: 96
     signals:
       use_playbook: false               # статистика по BTC к акциям не относится
+      ta_long_mult: 0.85                # 7 лет истории: технические лонги PF 0.83, шорты 1.16 — лонг без новости режем
     calendar:
       us_macro: true
       fixed_events:
