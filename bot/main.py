@@ -466,16 +466,16 @@ class Bot:
                 msgs = self.reviewer.apply_pending() if self.reviewer else []
                 self.tg.send(fmt.block("Применено", *[fmt.esc(m) for m in msgs]) if msgs else fmt.block("Правки", "нет ожидающих"), html=True)
             elif c == "/lessons":
-                self.tg.send(fmt.block("📚 Уроки", fmt.esc(self.reviewer.lessons_text(20)) if self.reviewer else "аналитик выключен"))
+                self.tg.send(fmt.block("📚 Уроки", fmt.esc(self.reviewer.lessons_text(20)) if self.reviewer else "аналитик выключен"), html=True)
             elif c == "/review":
                 if self.reviewer:
                     self.reviewer.run(apply=self._auto_apply())
             elif c == "/calendar":
                 self.tg.send(fmt.block("📅 Календарь", fmt.esc(self.cal.context_text(96))), html=True)
             elif c == "/shadow":
-                self.tg.send("👻 <b>ТЕНЕВЫЕ СДЕЛКИ</b> (сигналы, которые бот не взял, проверенные по факту)\n"
-                             + self.shadow.summary_text(7, top=10, detailed=True) + "\n\n"
-                             + self.shadow.summary_text(30, top=10, detailed=True))
+                self.tg.send("👻 <b>ТЕНЕВЫЕ СДЕЛКИ</b> (сигналы, которые бот не взял, проверенные по факту)\n\n"
+                             + fmt.block("За 7 дней", fmt.esc(self.shadow.summary_text(7, top=10, detailed=True))) + "\n\n"
+                             + fmt.block("За 30 дней", fmt.esc(self.shadow.summary_text(30, top=10, detailed=True))), html=True)
             elif c == "/market":
                 parts = cmd.split()
                 target = parts[1].lower() if len(parts) > 1 else ""
@@ -493,7 +493,7 @@ class Bot:
             elif c == "/why":
                 f, bw = self.last_funnel
                 self.tg.send("🔎 <b>ПОЧЕМУ НЕТ ВХОДА</b> (последний скан)\n\n"
-                             + fmt.funnel_text(f, bw, self.s.get("signals.entry_threshold"), top=8))
+                             + fmt.block("Отсеяно", fmt.esc(fmt.funnel_text(f, bw, self.s.get("signals.entry_threshold"), top=8))), html=True)
             elif c == "/analytics":
                 parts = cmd.split()
                 days = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 30
@@ -566,10 +566,15 @@ class Bot:
         m = self.risk.metrics(equity)
         mode = {"demo": "demo-счёт, виртуальные деньги", "testnet": "testnet", "live": "РЕАЛЬНЫЕ ДЕНЬГИ"}[self.s.mode]
         mk = {"crypto": "крипта, Bybit", "moex": "Мосбиржа, T-Invest"}.get(self.market, self.market)
-        self.tg.send(f"🤖 <b>БОТ ЗАПУЩЕН</b>: {mk} ({mode}{', dry-run: сделки не открываются, только сигналы' if self.dry else ''})\n"
-                     f"Торговый капитал {m['tradable']:.0f} {fmt.CUR}, резерв {m['reserve']:.0f}, весь счёт {equity:.0f} {fmt.CUR}\n"
-                     f"Аналитик {'включён' if self.analyst else 'ВЫКЛЮЧЕН (нет ANTHROPIC_API_KEY)'}; "
-                     f"новости: {len(self.news.tg_channels)} Telegram-каналов, RSS, анонсы бирж{', поток X' if x_on else ''}")
+        self.tg.send("\n\n".join([
+            f"🤖 <b>БОТ ЗАПУЩЕН</b>: {fmt.esc(mk)}",
+            fmt.block("Режим", fmt.esc(mode) + (", dry-run: сделки не открываются, только сигналы" if self.dry else "")),
+            fmt.block("Капитал", f"Торговый {fmt.money(m['tradable'])} {fmt.CUR}, резерв {fmt.money(m['reserve'])}, "
+                      f"весь счёт {fmt.money(equity)} {fmt.CUR}"),
+            fmt.block("Источники", f"Аналитик {'включён' if self.analyst else 'ВЫКЛЮЧЕН (нет ANTHROPIC_API_KEY)'}; "
+                      f"{len(self.news.tg_channels)} Telegram-каналов, {len(self.s.get('sources.rss') or {})} RSS-лент"
+                      + (", раскрытие эмитентов" if self.market == "moex" else ", анонсы бирж") + (", поток X" if x_on else "")),
+        ]), html=True)
         while True:
             now = time.time()
             try:
