@@ -246,6 +246,11 @@ class Bot:
         for sym in symbols:
             if self.tg.commands:   # скан длится минуты: команды из Telegram обрабатываем, не дожидаясь его конца
                 self.handle_commands(equity, positions)
+            if tag == "скан" and not self.events_q.empty():
+                # важная новость важнее планового скана: прерываем его и реагируем сразу (скан повторится через 5 минут)
+                log.info("скан прерван: новое событие, реагирую")
+                self.handle_events(equity, positions)
+                return 0
             if sym not in inst:
                 continue
             try:
@@ -382,15 +387,15 @@ class Bot:
                     pick = (perp or fut or share)[:1]
                     if pick and pick[0] not in extra:
                         extra.append(pick[0])
-        universe = universe + extra[:10]   # бережём лимиты брокера: не больше ~35 бумаг за скан
+        universe = universe + extra[:5]    # бережём лимиты брокера и внимание: ~12 ликвидных бумаг + до 5 по новостям
         self.evaluate(universe, equity, positions, tag="скан")
 
     def handle_events(self, equity, positions):
+        """События из потока новостей: закрыть контр-позиции и сразу оценить затронутые монеты."""
         if self.eventplay and self.eventplay.blocked():
             while not self.events_q.empty():
                 self.events_q.get_nowait()
             return
-        """События из потока новостей: закрыть контр-позиции и сразу оценить затронутые монеты."""
         new = []
         while True:
             try:
