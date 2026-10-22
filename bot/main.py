@@ -180,9 +180,12 @@ class Bot:
             self.events_q.put(rec)
             if ev["importance"] >= 8:
                 d = {"bullish": "позитив", "bearish": "негатив", "neutral": "нейтрально"}[ev["direction"]]
-                self.tg.send(f"📰 ВАЖНАЯ НОВОСТЬ ({fmt.RU_TYPE.get(ev['event_type'], 'событие')}, важность "
-                             f"{ev['importance']}/10, {d} для {', '.join(ev['affected_symbols']) or 'всего рынка'})\n"
-                             f"{fmt.clean(it['title'], 160)}\n{ev['reasoning']}")
+                parts = [f"📰 <b>ВАЖНАЯ НОВОСТЬ</b> — {fmt.RU_TYPE.get(ev['event_type'], 'событие')}, важность {ev['importance']}/10",
+                         fmt.block("Новость", fmt.esc(fmt.clean(it['title'], 200))),
+                         fmt.block("Оценка", f"{d} для {fmt.esc(', '.join(ev['affected_symbols']) or 'всего рынка')}"
+                                   + (f"; ожидали: {fmt.esc(ev['expected'])}, факт {'лучше' if ev['surprise'] > 0 else 'хуже'} ожиданий" if ev.get('expected') and abs(ev.get('surprise') or 0) >= 0.25 else "")),
+                         fmt.block("Почему", fmt.esc(ev['reasoning']))]
+                self.tg.send("\n\n".join(parts), html=True)
 
     # ---------- данные ----------
     def _klines_cached(self, symbol, interval, limit, max_age):
@@ -450,46 +453,46 @@ class Bot:
             elif c == "/stop":
                 self.risk.halt("ручная остановка (/stop)")
                 n = self.exe.cancel_pendings("ручная остановка")
-                self.tg.send(f"⛔ Новые входы остановлены, отложенных ордеров снято: {n}. "
+                self.tg.send(fmt.block("⛔ Стоп", f"Новые входы остановлены, отложенных ордеров снято: {n}. "
                              "Открытые позиции остаются под стопами. /panic закроет всё.")
             elif c == "/panic":
                 n = self.exe.close_all("ручное закрытие (/panic)")
                 self.risk.halt("ручная остановка (/panic)")
-                self.tg.send(f"⛔ Закрыто позиций: {n}. Бот остановлен. /resume чтобы продолжить.")
+                self.tg.send(fmt.block("⛔ Паника", f"Закрыто позиций: {n}. Бот остановлен. /resume чтобы продолжить.")
             elif c == "/resume":
                 self.risk.resume(equity)
-                self.tg.send("▶️ Торговля возобновлена, отсчёт просадки начат заново")
+                self.tg.send(fmt.block("▶️ Возобновлено", "Торговля возобновлена, отсчёт просадки начат заново")
             elif c == "/approve":
                 msgs = self.reviewer.apply_pending() if self.reviewer else []
-                self.tg.send("Применено:\n" + "\n".join(msgs) if msgs else "Нет ожидающих правок")
+                self.tg.send(fmt.block("Применено", *[fmt.esc(m) for m in msgs]) if msgs else fmt.block("Правки", "нет ожидающих"), html=True)
             elif c == "/lessons":
-                self.tg.send("Уроки:\n" + (self.reviewer.lessons_text(20) if self.reviewer else "аналитик выключен"))
+                self.tg.send(fmt.block("📚 Уроки", fmt.esc(self.reviewer.lessons_text(20)) if self.reviewer else "аналитик выключен"))
             elif c == "/review":
                 if self.reviewer:
                     self.reviewer.run(apply=self._auto_apply())
             elif c == "/calendar":
-                self.tg.send(self.cal.context_text(96))
+                self.tg.send(fmt.block("📅 Календарь", fmt.esc(self.cal.context_text(96))), html=True)
             elif c == "/shadow":
-                self.tg.send("👻 Теневые сделки (сигналы, которые бот не взял, проверенные по факту)\n"
+                self.tg.send("👻 <b>ТЕНЕВЫЕ СДЕЛКИ</b> (сигналы, которые бот не взял, проверенные по факту)\n"
                              + self.shadow.summary_text(7, top=10, detailed=True) + "\n\n"
                              + self.shadow.summary_text(30, top=10, detailed=True))
             elif c == "/market":
                 parts = cmd.split()
                 target = parts[1].lower() if len(parts) > 1 else ""
                 if target not in ("crypto", "moex"):
-                    self.tg.send(f"Сейчас рынок: {self.market}. Переключить: /market crypto или /market moex")
+                    self.tg.send(fmt.block("Рынок", f"Сейчас: {self.market}. Переключить: /market crypto или /market moex")
                 elif target == self.market:
                     self.tg.send(f"Уже торгуем {self.market}")
                 else:
                     n = self.exe.close_all(f"переключение рынка на {target}")
                     MARKET_FILE.write_text(target, encoding="utf-8")
-                    self.tg.send(f"🔁 Переключаюсь на {target}: закрыто позиций и ордеров {n}, перезапуск через несколько секунд")
+                    self.tg.send(fmt.block("🔁 Переключение рынка", f"На {target}: закрыто позиций и ордеров {n}, перезапуск через несколько секунд")
                     log.info("Переключение рынка на %s, перезапуск", target)
                     time.sleep(2)
                     os._exit(3)   # systemd поднимет процесс заново уже с другим рынком
             elif c == "/why":
                 f, bw = self.last_funnel
-                self.tg.send("Последний скан, почему нет входа:\n"
+                self.tg.send("🔎 <b>ПОЧЕМУ НЕТ ВХОДА</b> (последний скан)\n\n"
                              + fmt.funnel_text(f, bw, self.s.get("signals.entry_threshold"), top=8))
             elif c == "/analytics":
                 parts = cmd.split()
@@ -500,7 +503,7 @@ class Bot:
                 try:
                     lines = (LOGS / "bot.log").read_text(encoding="utf-8", errors="replace").splitlines()
                     tail = [l for l in lines if "news: tg" not in l][-25:]
-                    self.tg.send("Последние записи лога:\n" + "\n".join(l[11:200] for l in tail))
+                    self.tg.send(fmt.block("📜 Лог", *[fmt.esc(l[11:200]) for l in tail]), html=True)
                 except Exception as e:  # noqa: BLE001
                     self.tg.send(f"Лог недоступен: {e}")
             elif c == "/update":
@@ -563,7 +566,7 @@ class Bot:
         m = self.risk.metrics(equity)
         mode = {"demo": "demo-счёт, виртуальные деньги", "testnet": "testnet", "live": "РЕАЛЬНЫЕ ДЕНЬГИ"}[self.s.mode]
         mk = {"crypto": "крипта, Bybit", "moex": "Мосбиржа, T-Invest"}.get(self.market, self.market)
-        self.tg.send(f"🤖 Бот запущен: {mk} ({mode}{', dry-run: сделки не открываются, только сигналы' if self.dry else ''})\n"
+        self.tg.send(f"🤖 <b>БОТ ЗАПУЩЕН</b>: {mk} ({mode}{', dry-run: сделки не открываются, только сигналы' if self.dry else ''})\n"
                      f"Торговый капитал {m['tradable']:.0f} {fmt.CUR}, резерв {m['reserve']:.0f}, весь счёт {equity:.0f} {fmt.CUR}\n"
                      f"Аналитик {'включён' if self.analyst else 'ВЫКЛЮЧЕН (нет ANTHROPIC_API_KEY)'}; "
                      f"новости: {len(self.news.tg_channels)} Telegram-каналов, RSS, анонсы бирж{', поток X' if x_on else ''}")
@@ -589,7 +592,7 @@ class Bot:
                     self.handle_commands(equity, positions)
                     if now - self.broker_down_since > 600 and now - self.last.get("broker_alert", 0) > 1800:
                         self.last["broker_alert"] = now
-                        self.tg.send("⚠️ Нет связи с брокером уже больше 10 минут: котировки и ордера недоступны, "
+                        self.tg.send(fmt.block("⚠️ Нет связи с брокером", "Уже больше 10 минут: котировки и ордера недоступны, "
                                      "позиции под стоп-заявками брокера. Команды принимаю, сделки не открываю.")
                     time.sleep(iv.get("loop_sleep_sec", 10))
                     continue
@@ -638,8 +641,9 @@ class Bot:
                 if time.time() - self.last_err_sent >= 1800:
                     self.last_err_sent = time.time()
                     short = str(e).split("\n")[0][:160]
-                    self.tg.send(f"⚠️ Ошибка в работе бота ({self.err_count} за последнее время): {short}\n"
-                                 f"Бот продолжает работать, позиции под стопами на бирже.")
+                    self.tg.send("\n\n".join([fmt.block("⚠️ Ошибка в работе бота", f"{self.err_count} за последнее время"),
+                                               fmt.block("Текст", fmt.esc(short)),
+                                               fmt.block("Что это значит", "Бот продолжает работать, позиции под стопами на бирже.")]), html=True)
                     self.err_count = 0
                 time.sleep(30)
             time.sleep(3)

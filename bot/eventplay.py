@@ -11,6 +11,7 @@ import re
 import time
 from datetime import datetime, timezone
 
+from . import fmt
 from .signals import Signal
 
 log = logging.getLogger("eventplay")
@@ -44,8 +45,9 @@ class EventPlay:
             if key not in self.flat_done:
                 self.flat_done.add(key)
                 n = self.b.exe.close_all("за 20 минут до решения ЦБ: через событие позиции не держим")
-                self.b.tg.send(f"🏦 Через {int((e['ts'] - now) / 60)} мин решение ЦБ по ставке. Закрыл позиции и ордера ({n}), "
-                               f"новых входов не будет до решения. Консенсус: {self._consensus_text()}")
+                self.b.tg.send("\n\n".join([f"🏦 <b>РЕШЕНИЕ ЦБ ЧЕРЕЗ {int((e['ts'] - now) / 60)} МИН</b>",
+                                             fmt.block("Сделано", f"Закрыл позиции и ордера ({n}), новых входов не будет до решения"),
+                                             fmt.block("Консенсус", fmt.esc(self._consensus_text()))]), html=True)
         return now < self.block_until
 
     def blocked(self, now=None):
@@ -96,16 +98,20 @@ class EventPlay:
             cons, src = self.consensus()
             log.info("Решение ЦБ: %.2f%% (консенсус %s) — %s", actual, cons, it.get("title", "")[:80])
             if cons is None:
-                self.b.tg.send(f"🏦 Решение ЦБ: ставка {actual:g}%. Консенсус не известен — без сделки.\n{it.get('title', '')[:160]}")
+                self.b.tg.send("\n\n".join([f"🏦 <b>РЕШЕНИЕ ЦБ: {actual:g}%</b>", fmt.block("Сделка", "нет: консенсус не известен"),
+                                             fmt.block("Источник", fmt.esc(it.get('title', '')[:200]))]), html=True)
                 return True
             surprise = cons - actual   # + = мягче ожиданий (бычье), − = жёстче (медвежье)
             if abs(surprise) < 0.25:
-                self.b.tg.send(f"🏦 Решение ЦБ: {actual:g}% — совпало с консенсусом {cons:g}%. Движение в цене, сделки нет.\n{it.get('title', '')[:160]}")
+                self.b.tg.send("\n\n".join([f"🏦 <b>РЕШЕНИЕ ЦБ: {actual:g}%</b>", fmt.block("Консенсус", f"{cons:g}% — совпало"),
+                                             fmt.block("Сделка", "нет: движение уже в цене"), fmt.block("Источник", fmt.esc(it.get('title', '')[:200]))]), html=True)
                 return True
             direction = "long" if surprise > 0 else "short"
             reason = f"решение ЦБ {actual:g}% против консенсуса {cons:g}% ({'мягче' if surprise > 0 else 'жёстче'} на {abs(surprise):g} п.п.)"
-            self.b.tg.send(f"🏦 Решение ЦБ: {actual:g}% при консенсусе {cons:g}% — {'МЯГЧЕ' if surprise > 0 else 'ЖЁСТЧЕ'} ожиданий. "
-                           f"Вхожу {'в лонг' if direction == 'long' else 'в шорт'} по рынку: {', '.join(self.symbols)}")
+            self.b.tg.send("\n\n".join([f"🏦 <b>РЕШЕНИЕ ЦБ: {actual:g}%</b>",
+                                         fmt.block("Консенсус", f"{cons:g}% — факт {'МЯГЧЕ' if surprise > 0 else 'ЖЁСТЧЕ'} ожиданий на {abs(surprise):g} п.п."),
+                                         fmt.block("Сделка", f"Вхожу {'в лонг' if direction == 'long' else 'в шорт'} по рынку: {', '.join(self.symbols)}"),
+                                         fmt.block("Источник", fmt.esc(it.get('title', '')[:200]))]), html=True)
             equity, positions, _ = self.b.last_known
             for sym in self.symbols:
                 try:

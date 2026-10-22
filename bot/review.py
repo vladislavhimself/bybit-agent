@@ -119,7 +119,7 @@ class Reviewer:
         text = (f"🧠 Разбор: реальных сделок {len(trades)}, теневых {sh_new}\n" + rv.summary + "\n\nУроки:\n" + "\n".join("• " + l for l in rv.lessons)
                 + ("\n\nПараметры:\n" + "\n".join(lines) if lines else "")
                 + ("" if apply or not rv.param_changes else "\n\nПрименить: /approve"))
-        self.tg.send(text)
+        self.tg.send(text, html=True)
         return rv
 
     def apply_pending(self):

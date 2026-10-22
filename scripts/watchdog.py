@@ -23,11 +23,16 @@ REPEAT_SEC = 6 * 3600          # одна и та же проблема напо
 LOG_STALE_SEC = 15 * 60        # бот не писал в лог 15 минут = завис
 
 
-def tg(text):
+def tg(text, html=False):
     if not TOKEN or not CHAT:
         return
+    body = {"chat_id": CHAT, "text": text}
+    if html:
+        body["parse_mode"] = "HTML"
     try:
-        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json={"chat_id": CHAT, "text": text}, timeout=15)
+        r = requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json=body, timeout=15)
+        if html and r.status_code != 200:
+            requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json={"chat_id": CHAT, "text": re.sub(r"</?b>", "", text)}, timeout=15)
     except requests.RequestException:
         pass
 
@@ -101,12 +106,12 @@ def main():
     now = time.time()
     for key, text in problems.items():
         if now - st.get(key, 0) > REPEAT_SEC:
-            tg("🔧 ТЕХНИЧЕСКАЯ ПРОБЛЕМА\n" + text)
+            tg("🔧 <b>ТЕХНИЧЕСКАЯ ПРОБЛЕМА</b>\n\n<b>Что случилось</b>\n" + text.replace("<", "&lt;"), html=True)
             st[key] = now
     for key in list(st):
         if key not in problems and key != "_":
             if st[key] > 0:
-                tg("✅ Исправлено: " + key)
+                tg("✅ <b>ИСПРАВЛЕНО</b>\n\n" + key, html=True)
             st.pop(key)
     STATE.write_text(json.dumps(st))
     # пульс брокеру: если сервер замолчит целиком, брокер сам напишет в Telegram
