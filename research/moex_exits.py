@@ -96,7 +96,9 @@ def run(feats, **kw):
             out = simulate(f, i, sg, **kw)
             if out is None:
                 continue
-            res.append((f.index[i], sym, sg, out[0]))
+            # в CSV Мосбиржи ts в секундах, а features считает его миллисекундами: дату берём из исходного ts
+            t = pd.to_datetime(f["ts"].values[i], unit="s") if "ts" in f.columns else f.index[i]
+            res.append((t, sym, sg, out[0]))
             busy = out[1] + 12
     return pd.DataFrame(res, columns=["t", "sym", "sg", "r"])
 
@@ -117,6 +119,8 @@ for sym in UNI.split():
     if not os.path.exists(p):
         continue
     df = pd.read_csv(p)
+    if df.ts.max() < 1e11:   # история Мосбиржи сохранена в секундах, бэктестер ждёт миллисекунды
+        df["ts"] = df["ts"] * 1000
     df = df[df.ts >= df.ts.max() - DAYS * 86400000]
     df = df[df.volume.cumsum() > 0].reset_index(drop=True)
     if len(df) >= 1500:
