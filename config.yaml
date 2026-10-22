@@ -215,6 +215,16 @@ markets:
       max_margin_share: 0.6             # гарантийное обеспечение всех контрактов не больше 60% капитала
       weekend_risk_mult: 0.5            # торги в выходные тонкие
       soft_stops: true                  # программный стоп в дополнение к стоп-заявке брокера
+      # Геометрия выходов по исследованию research/moex_exits.py (19 бумаг, 500 дней, 218 техн. входов):
+      # стоп 2.0 ATR лучше 2.5; тейки дальше и меньше; защита прибыли 0.6R после 0.8R срезала плюсы (PF 1.08 -> 1.35)
+      stop_atr_mult: 2.0
+      tp_levels:
+        - {r: 1.5, part: 0.25}
+        - {r: 2.5, part: 0.35}
+      breakeven_r: 0.7
+      giveback_r: 1.2
+      giveback_min_peak_r: 1.5
+      max_hours_in_trade: 96
     signals:
       use_playbook: false               # статистика по BTC к акциям не относится
     calendar:
