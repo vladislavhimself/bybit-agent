@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from typing import List, Literal
 
 import anthropic
+
+from .config import DATA
 from pydantic import BaseModel
 
 log = logging.getLogger("analyst")
@@ -177,6 +179,9 @@ class Analyst:
             m = self.mood.text()
             if m:
                 parts.append(m)
+        pb = DATA / "moex_playbook.txt"
+        if self.s.market == "moex" and pb.exists():
+            parts.append(pb.read_text(encoding="utf-8")[:2500])
         if getattr(self, "expectations", None):
             e = self.expectations.text()
             if e:
