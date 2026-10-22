@@ -403,8 +403,7 @@ class MoexExchange:
     price_based_pnl = True   # результат сделки считаем по ценам входа и выхода, а не по платежам брокера
 
     def balances(self):
-        """Капитал = деньги + акции + вариационная маржа открытых фьючерсов (+ в песочнице реализованный результат
-        по фьючерсам, потому что песочница не проводит клиринг: деньги меняются только на комиссии).
+        """Капитал = деньги + акции по рынку + вариационная маржа открытых фьючерсов.
         totalAmountPortfolio не годится: в нём фьючерсы учтены по полной стоимости контракта."""
         inst = self.instruments()   # заполняет карты figi/uid -> тикер до их использования
         p = self.call("OperationsService", "GetPortfolio", {"accountId": self.account, "currency": "RUB"})
@@ -423,8 +422,10 @@ class MoexExchange:
             else:
                 shares_upnl += q2f(x.get("expectedYield"))
         shares = q2f(p.get("totalAmountShares")) + q2f(p.get("totalAmountEtf")) + q2f(p.get("totalAmountBonds"))
-        realized = self._realized_futures(p) if self.mode != "live" else 0.0
-        equity = cash + shares + fut_upnl + realized
+        # Проверено по операциям песочницы 22.10: деньги = пополнение + платежи по акциям + комиссии + вариационная
+        # маржа (списывается при клиринге в 21:00). Платежи по фьючерсам в деньги не попадают, а их стоимость
+        # в totalAmountPortfolio — фикция. Поэтому капитал = деньги + акции по рынку + вармаржа открытых фьючерсов.
+        equity = cash + shares + fut_upnl
         upnl = fut_upnl + shares_upnl
         return {"equity": equity, "wallet": equity - upnl, "unrealised": upnl, "available": cash, "total_equity": equity}
 
@@ -633,7 +634,9 @@ class MoexExchange:
             if typ in ("OPERATION_TYPE_BUY", "OPERATION_TYPE_SELL"):
                 price, qty = q2f(op.get("price")), float(op.get("quantity") or 0)
                 if entry is not None and typ == closing:
-                    d["pnl"] += (price - entry) * qty * self.mult(sym) * (1 if side == "Buy" else -1)
+                    # у акций quantity в операции — штуки (множитель лота уже внутри), у фьючерсов — контракты × стоимость шага
+                    per_unit = self.mult(sym) if self.instruments()[sym]["kind"] == "future" else 1.0
+                    d["pnl"] += (price - entry) * qty * per_unit * (1 if side == "Buy" else -1)
                     d["qty"] += qty
                 if (entry is None or typ == closing) and ts >= d["ts"]:
                     d["ts"], d["exit"] = ts, price

@@ -36,6 +36,12 @@ def news_score(base, events, min_importance, now=None, playbook=None, df1h=None,
         w = 1.0 if direct else (0.7 if base in ("BTC", "ETH") else 0.4)
         sign = 1 if e["direction"] == "bullish" else -1
         contrib = sign * e["importance"] / 10 * e["confidence"] * decay * w
+        if e.get("market_wide") and base not in (e.get("affected") or []):
+            # общерыночная новость (инфляция, переговоры) для бумаги, которую она не называет: половинный вес,
+            # и слабые (<6) такие новости сами по себе вход не создают
+            if e["importance"] < 6:
+                continue
+            contrib *= 0.5
         if playbook is not None:
             contrib *= playbook.adjust(e["event_type"], e["direction"])
         if psych_cfg and df1h is not None and direct:
