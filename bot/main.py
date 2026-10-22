@@ -454,14 +454,14 @@ class Bot:
                 self.risk.halt("ручная остановка (/stop)")
                 n = self.exe.cancel_pendings("ручная остановка")
                 self.tg.send(fmt.block("⛔ Стоп", f"Новые входы остановлены, отложенных ордеров снято: {n}. "
-                             "Открытые позиции остаются под стопами. /panic закроет всё.")
+                             "Открытые позиции остаются под стопами. /panic закроет всё."), html=True)
             elif c == "/panic":
                 n = self.exe.close_all("ручное закрытие (/panic)")
                 self.risk.halt("ручная остановка (/panic)")
-                self.tg.send(fmt.block("⛔ Паника", f"Закрыто позиций: {n}. Бот остановлен. /resume чтобы продолжить.")
+                self.tg.send(fmt.block("⛔ Паника", f"Закрыто позиций: {n}. Бот остановлен. /resume чтобы продолжить."), html=True)
             elif c == "/resume":
                 self.risk.resume(equity)
-                self.tg.send(fmt.block("▶️ Возобновлено", "Торговля возобновлена, отсчёт просадки начат заново")
+                self.tg.send(fmt.block("▶️ Возобновлено", "Торговля возобновлена, отсчёт просадки начат заново"), html=True)
             elif c == "/approve":
                 msgs = self.reviewer.apply_pending() if self.reviewer else []
                 self.tg.send(fmt.block("Применено", *[fmt.esc(m) for m in msgs]) if msgs else fmt.block("Правки", "нет ожидающих"), html=True)
@@ -480,13 +480,13 @@ class Bot:
                 parts = cmd.split()
                 target = parts[1].lower() if len(parts) > 1 else ""
                 if target not in ("crypto", "moex"):
-                    self.tg.send(fmt.block("Рынок", f"Сейчас: {self.market}. Переключить: /market crypto или /market moex")
+                    self.tg.send(fmt.block("Рынок", f"Сейчас: {self.market}. Переключить: /market crypto или /market moex"), html=True)
                 elif target == self.market:
                     self.tg.send(f"Уже торгуем {self.market}")
                 else:
                     n = self.exe.close_all(f"переключение рынка на {target}")
                     MARKET_FILE.write_text(target, encoding="utf-8")
-                    self.tg.send(fmt.block("🔁 Переключение рынка", f"На {target}: закрыто позиций и ордеров {n}, перезапуск через несколько секунд")
+                    self.tg.send(fmt.block("🔁 Переключение рынка", f"На {target}: закрыто позиций и ордеров {n}, перезапуск через несколько секунд"), html=True)
                     log.info("Переключение рынка на %s, перезапуск", target)
                     time.sleep(2)
                     os._exit(3)   # systemd поднимет процесс заново уже с другим рынком
@@ -593,7 +593,7 @@ class Bot:
                     if now - self.broker_down_since > 600 and now - self.last.get("broker_alert", 0) > 1800:
                         self.last["broker_alert"] = now
                         self.tg.send(fmt.block("⚠️ Нет связи с брокером", "Уже больше 10 минут: котировки и ордера недоступны, "
-                                     "позиции под стоп-заявками брокера. Команды принимаю, сделки не открываю.")
+                                     "позиции под стоп-заявками брокера. Команды принимаю, сделки не открываю."), html=True)
                     time.sleep(iv.get("loop_sleep_sec", 10))
                     continue
                 self.last_known_ts = now
