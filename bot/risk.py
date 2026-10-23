@@ -214,6 +214,9 @@ class RiskManager:
             m = self.ex.margin_per_lot(symbol, "Buy" if stop < price else "Sell")
             if m:
                 max_lots = int(t * r.get("max_margin_share", 0.6) / m)
+                free = self.ex.free_margin() if hasattr(self.ex, "free_margin") else None
+                if free is not None:
+                    max_lots = min(max_lots, int(free * 0.95 / m))   # песочница: не больше, чем есть свободных денег
                 if max_lots < 1:
                     return None, f"ГО одного контракта {m:.0f} больше {r.get('max_margin_share', 0.6) * 100:.0f}% капитала"
                 qty = min(qty, max_lots)

@@ -84,6 +84,7 @@ class Bot:
         if self.reviewer:
             self.reviewer.shadow = self.shadow   # разбор учитывает и теневые сделки
         self.news = NewsCollector(self.ex, self.j, self.s)
+        self.seen_titles = {}
         self.last_known, self.last_known_ts, self.broker_down_since = (0.0, [], {"wallet": 0.0}), time.time(), None   # до первого ответа биржи
         self.expect = self.crowd = self.eventplay = None
         if self.market == "moex":
@@ -145,9 +146,19 @@ class Bot:
         log.info("Новых новостей: %d", len(fresh))
         whale_srcs = {f"tg:{c}" for c in (self.s.get("sources.whale_channels") or [])}
         lessons = self.reviewer.lessons_text() if self.reviewer else ""
+        import re as _re
         for it in fresh:
             self.j.mark_analyzed(it["id"])
             ev = None
+            # один и тот же заголовок из десяти каналов (особенно в день ЦБ): анализируем один раз за 2 часа
+            key = _re.sub(r"[^a-zа-яё0-9%]+", " ", (it.get("title") or "").lower()).strip()[:70]
+            now_ts = time.time()
+            if key and now_ts - self.seen_titles.get(key, 0) < 7200:
+                continue
+            if key:
+                self.seen_titles[key] = now_ts
+                if len(self.seen_titles) > 5000:
+                    self.seen_titles = {k: v for k, v in self.seen_titles.items() if now_ts - v < 7200}
             if it["source"] in whale_srcs:
                 ev = parse_whale(it["summary"])
                 if ev:

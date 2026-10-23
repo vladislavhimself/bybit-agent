@@ -242,6 +242,7 @@ markets:
         - {date: "2026-11-05", time: "19:00", tz: "Europe/Moscow", title: "Росстат: недельная инфляция", impact: medium}
         - {date: "2026-11-11", time: "19:00", tz: "Europe/Moscow", title: "Росстат: недельная инфляция", impact: medium}
     llm:
+      daily_budget_usd: 6               # в день ЦБ 4$ кончились к 13:43 — дальше работала дешёвая модель
       cheap_sources: [lenta_econ, forbes, smartlab, gazeta_biz, ria, izvestia, tass_econ, "tg:profitgate", "tg:MarketOverview", "tg:investingcorp",
                       "tg:divonline", "tg:selfinvestor", "tg:bitkogan", "tg:truecon", "tg:headlines_for_traders"]
       market_notes: |

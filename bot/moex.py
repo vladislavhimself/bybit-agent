@@ -495,8 +495,22 @@ class MoexExchange:
     def set_leverage(self, symbol, lev):
         return   # плечо на Мосбирже задаётся брокером через маржу, менять нечего
 
+    def free_margin(self):
+        """Песочница: ордер проходит только в пределах свободных денег (и для акций, и для фьючерсов)."""
+        if self.mode == "live":
+            return None
+        try:
+            return self.balances()["available"]
+        except Exception:  # noqa: BLE001
+            return None
+
     def margin_per_lot(self, symbol, side="Buy"):
         it = self.instruments()[symbol]
+        if self.mode != "live" and it["kind"] != "future":
+            try:
+                return self.last_price(symbol) * it["lot"]   # песочница списывает за акции полную стоимость
+            except Exception:  # noqa: BLE001
+                return None
         if it["kind"] != "future":
             return None
         if self.mode != "live":

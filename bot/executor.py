@@ -84,6 +84,11 @@ class Executor:
                 order_id = self.ex.place_market(sig.symbol, side, qty, sl=stop)
             except Exception as ex:  # noqa: BLE001
                 log.error("%s: ошибка открытия: %s", sig.symbol, ex)
+                if "Not enough balance" in str(ex):
+                    if time.time() - getattr(self, "_balance_warn_ts", 0) > 7200:
+                        self._balance_warn_ts = time.time()
+                        self.tg.send(fmt.block("ℹ️ Песочница: нет свободных денег под новую позицию", f"{fmt.esc(fmt.label(sig.symbol))} {sig.direction}: пропускаю; повторю такие предупреждения не чаще раза в 2 часа"), html=True)
+                    return None
                 self.tg.send("\n\n".join([fmt.block("⚠️ Не удалось открыть", f"{fmt.esc(fmt.label(sig.symbol))} {sig.direction}"),
                                            fmt.block("Ошибка", fmt.esc(str(ex)[:160]))]), html=True)
                 return None
@@ -104,6 +109,11 @@ class Executor:
             order_id = self.ex.place_limit(sig.symbol, side, qty, limit, reduce_only=False)
         except Exception as ex:  # noqa: BLE001
             log.error("%s: ошибка лимитного ордера: %s", sig.symbol, ex)
+            if "Not enough balance" in str(ex):
+                if time.time() - getattr(self, "_balance_warn_ts", 0) > 7200:
+                    self._balance_warn_ts = time.time()
+                    self.tg.send(fmt.block("ℹ️ Песочница: нет свободных денег под новую позицию", f"{fmt.esc(fmt.label(sig.symbol))} {sig.direction}: пропускаю; повторю такие предупреждения не чаще раза в 2 часа"), html=True)
+                return None
             self.tg.send("\n\n".join([fmt.block("⚠️ Не удалось выставить ордер", f"{fmt.esc(fmt.label(sig.symbol))} {sig.direction}"),
                                        fmt.block("Ошибка", fmt.esc(str(ex)[:160]))]), html=True)
             return None
