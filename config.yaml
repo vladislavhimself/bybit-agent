@@ -155,6 +155,11 @@ learning:
 # ===================== Мосбиржа: накладывается на общие настройки, когда активен рынок moex =====================
 markets:
   moex:
+    shadow:
+      paper_mode: true                  # тени за paper_mode_days в минусе -> только наблюдение, без сделок
+      paper_mode_days: 3
+      paper_mode_min_n: 20
+      paper_mode_below_r: -0.02
     currency: RUB
     universe:
       top_n_by_turnover: 12             # только самые ликвидные: меньше шума, точнее статистика (было 25)
@@ -231,6 +236,10 @@ markets:
       max_hours_in_trade: 96
     signals:
       use_playbook: false               # статистика по BTC к акциям не относится
+      trend_gate: true                  # лонги только при растущем индексе и дневном тренде вверх; в падении только шорты
+      trend_index: [IMOEXF, MOEX]       # по чему считаем режим рынка (индекс выше/ниже 20-дневной средней)
+      news_entry_min_importance: 7      # новостной вход только на сильной новости...
+      news_entry_max_age_min: 15        # ...и свежей; остальное уходит в тени для статистики
       ta_long_mult: 0.85                # 7 лет истории: технические лонги PF 0.83, шорты 1.16 — лонг без новости режем
     calendar:
       us_macro: true

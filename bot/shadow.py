@@ -22,6 +22,7 @@ REASON_RU = {
     "limit_cooldown": "пауза по монете", "limit_max_positions": "лимит позиций",
     "limit_same_direction": "лимит позиций в сторону", "limit_direction_risk": "лимит риска по стороне",
     "limit_per_event": "лимит сделок на новость", "limit_exposure": "лимит объёма",
+    "trend_gate": "против тренда рынка", "stale_news": "новость слабая или несвежая", "paper_mode": "режим наблюдения",
 }
 
 

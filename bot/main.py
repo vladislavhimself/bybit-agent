@@ -85,6 +85,7 @@ class Bot:
             self.reviewer.shadow = self.shadow   # разбор учитывает и теневые сделки
         self.news = NewsCollector(self.ex, self.j, self.s)
         self.seen_titles = {}
+        self.paper_mode = bool(self.j.kv_get("paper_mode", False))
         self.last_known, self.last_known_ts, self.broker_down_since = (0.0, [], {"wallet": 0.0}), time.time(), None   # до первого ответа биржи
         self.expect = self.crowd = self.eventplay = None
         if self.market == "moex":
@@ -299,6 +300,11 @@ class Bot:
         opened = 0
         dirs_done = set()   # одновременные сигналы в одну сторону = одна ставка на рынок: берём только сильнейший
         for sig, ta, tk in candidates:
+            gate = self._gate(sig, ta)
+            if gate:
+                log.info("%s %s: %s", sig.symbol, sig.direction, fmt.REASONS_RU.get(gate, gate))
+                self._shadow_from_signal(sig, ta, gate)
+                continue
             if sig.direction in dirs_done:
                 log.info("%s: уже есть вход в эту сторону в этом скане", sig.symbol)
                 self._shadow_from_signal(sig, ta, "one_per_scan")
@@ -544,6 +550,77 @@ class Bot:
         return bool(self.s.get("learning.auto_apply")) and self.s.mode != "live"
 
     # ---------- цикл ----------
+    # ---------- ворота перед входом: тренд рынка, свежесть новости, режим наблюдения ----------
+    def market_regime(self):
+        """True = рынок растёт (индекс выше 20-дневной средней и дневной тренд вверх), False = падает, None = нет данных."""
+        c = getattr(self, "_regime_cache", None)
+        if c and time.time() - c[0] < 1800:
+            return c[1]
+        up = None
+        for sym in (self.s.get("signals.trend_index") or ["IMOEXF", "MOEX"]):
+            try:
+                if sym not in self.ex.instruments():
+                    continue
+                d = self._klines_cached(sym, "D", 60, 3600)
+                if d is None or len(d) < 25:
+                    continue
+                closes = d["close"].astype(float)
+                sma20 = closes.tail(20).mean()
+                sma5 = closes.tail(5).mean()
+                up = bool(closes.iloc[-1] > sma20 and sma5 >= closes.tail(10).mean())
+                break
+            except Exception as e:  # noqa: BLE001
+                log.debug("режим рынка %s: %s", sym, e)
+        self._regime_cache = (time.time(), up)
+        return up
+
+    def _gate(self, sig, ta):
+        """Причина отказа (ключ для теней) или None."""
+        p = self.s.get("signals") or {}
+        if getattr(self, "paper_mode", False):
+            return "paper_mode"
+        if p.get("trend_gate"):
+            up = self.market_regime()
+            td = ta.get("trend_d", 0)
+            if sig.direction == "long" and (up is False or td < 0):
+                return "trend_gate"
+            if sig.direction == "short" and up is True and td > 0:
+                return "trend_gate"
+        if sig.news_driven and sig.events:
+            top = max(sig.events, key=lambda e: e["importance"] * e.get("confidence", 1))
+            age_min = (time.time() - top["ts"]) / 60
+            if top["importance"] < p.get("news_entry_min_importance", 0) or age_min > p.get("news_entry_max_age_min", 1e9):
+                return "stale_news"
+        return None
+
+    def update_paper_mode(self, now=None):
+        """Тени за последние дни в минусе → торгуем только тенями, пока статистика не вернётся в плюс."""
+        c = self.s.get("shadow") or {}
+        if not c.get("paper_mode"):
+            return
+        now = now or time.time()
+        rows = self.j.shadows_resolved(int(now - c.get("paper_mode_days", 3) * 86400))
+        vals = [r["r_pullback"] if r["r_pullback"] is not None else r["r_market"] for r in rows]
+        vals = [v for v in vals if v is not None]
+        if len(vals) < c.get("paper_mode_min_n", 20):
+            return
+        avg = sum(vals) / len(vals)
+        want = avg < c.get("paper_mode_below_r", -0.02)
+        if want != getattr(self, "paper_mode", False):
+            self.paper_mode = want
+            self.j.kv_set("paper_mode", want)
+            if want:
+                self.tg.send("\n\n".join([
+                    "👻 <b>РЕЖИМ НАБЛЮДЕНИЯ</b>",
+                    fmt.block("Почему", f"Теневые сделки за {c.get('paper_mode_days', 3)} дн.: {len(vals)} шт., средний {avg:+.2f}R — система сейчас не зарабатывает"),
+                    fmt.block("Что делаю", "Новых сделок не открываю, только тени для статистики. Открытые позиции веду как обычно. "
+                              "Вернусь к торговле, когда тени выйдут в плюс.")]), html=True)
+            else:
+                self.tg.send("\n\n".join([
+                    "✅ <b>ТОРГОВЛЯ ВОЗОБНОВЛЕНА</b>",
+                    fmt.block("Почему", f"Теневые сделки за {c.get('paper_mode_days', 3)} дн.: {len(vals)} шт., средний {avg:+.2f}R")]), html=True)
+        log.info("Режим наблюдения: %s (тени %d, средний %+.2fR)", "ДА" if self.paper_mode else "нет", len(vals), avg)
+
     def _names(self):
         """Тикер -> название компании для сообщений: по списку инструментов биржи (Мосбиржа)."""
         names = {}
@@ -593,6 +670,12 @@ class Bot:
                 self.mood.refresh()
                 if self.expect and self.expect.due(now):
                     self.expect.refresh(now)
+                if now - self.last.get("paper_check", 0) >= 1800:
+                    self.last["paper_check"] = now
+                    try:
+                        self.update_paper_mode(now)
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("режим наблюдения: %s", e)
                 try:
                     bal = self.ex.balances()
                     equity = bal["equity"]
