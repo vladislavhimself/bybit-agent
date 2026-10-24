@@ -85,8 +85,6 @@ class Bot:
         if self.reviewer:
             self.reviewer.shadow = self.shadow   # разбор учитывает и теневые сделки
         self.news = NewsCollector(self.ex, self.j, self.s)
-        self.tg_live = TelegramLive(self.s.get("sources.telegram_channels") or [], self.raw_q, self.news_wake, self.s)
-        self.news.live = self.tg_live
         self.seen_titles = {}
         self.paper_mode = bool(self.j.kv_get("paper_mode", False))
         self.last_known, self.last_known_ts, self.broker_down_since = (0.0, [], {"wallet": 0.0}), time.time(), None   # до первого ответа биржи
@@ -101,6 +99,9 @@ class Bot:
         self.events_q = queue.Queue()
         self.raw_q = queue.Queue()          # посты из потока X, минуя опрос
         self.news_wake = threading.Event()
+        # живой Telegram (Telethon) — только если заданы TELEGRAM_API_ID/HASH/SESSION; без них выключен, работает ярусный опрос
+        self.tg_live = TelegramLive(self.s.get("sources.telegram_channels") or [], self.raw_q, self.news_wake, self.s)
+        self.news.live = self.tg_live
         self.stop_flag = threading.Event()
         self.xstream = None
         if self.s.get("sources.twitter_mode", "stream") == "stream":
@@ -676,7 +677,7 @@ class Bot:
             fmt.block("Источники", f"Аналитик {'включён' if self.analyst else 'ВЫКЛЮЧЕН (нет ANTHROPIC_API_KEY)'}; "
                       f"{len(self.news.tg_channels)} Telegram-каналов, {len(self.s.get('sources.rss') or {})} RSS-лент"
                       + (", раскрытие эмитентов" if self.market == "moex" else ", анонсы бирж") + (", поток X" if x_on else "")
-                      + ("; Telegram в реальном времени" if self.tg_live.enabled else "; Telegram по опросу раз в 20 с")),
+                      + ("; Telegram в реальном времени" if self.tg_live.enabled else "; Telegram: быстрые каналы каждые 5 с, остальные 30 с")),
         ]), html=True)
         while True:
             now = time.time()
