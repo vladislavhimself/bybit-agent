@@ -608,7 +608,8 @@ class Bot:
         if not c.get("paper_mode"):
             return
         now = now or time.time()
-        rows = self.j.shadows_resolved(int(now - c.get("paper_mode_days", 3) * 86400))
+        since = max(int(now - c.get("paper_mode_days", 3) * 86400), int(self.j.kv_get("paper_mode_since", 0) or 0))
+        rows = self.j.shadows_resolved(since)   # только тени, записанные после включения ворот: старую систему не судим
         vals = [r["r_pullback"] if r["r_pullback"] is not None else r["r_market"] for r in rows]
         vals = [v for v in vals if v is not None]
         if len(vals) < c.get("paper_mode_min_n", 20):
