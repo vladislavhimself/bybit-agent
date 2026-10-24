@@ -87,11 +87,16 @@ class NewsCollector:
         self.twitter_disabled = False
 
     # ---------- источники ----------
-    def _telegram(self, now):
+    def _telegram(self, now, channels=None):
         items = []
-        for ch in self.tg_channels:
+        for ch in (channels if channels is not None else self.tg_channels):
             try:
                 r = self.session.get(f"https://t.me/s/{ch}", timeout=12)
+                if r.status_code == 429:
+                    # Telegram попросил притормозить: быстрый ярус на минуту откладываем
+                    self.last["tg_fast"] = now + 60
+                    log.warning("telegram 429 на %s, быстрый опрос приостановлен на 60 с", ch)
+                    break
                 if r.status_code != 200:
                     continue
                 for post, text, dt in TG_MSG_RE.findall(r.text):
@@ -110,9 +115,11 @@ class NewsCollector:
                 log.debug("telegram %s: %s", ch, e)
         return items
 
-    def _rss(self, now):
+    def _rss(self, now, only=None):
         items = []
         for name, url in (self.s.get("sources.rss") or RSS_SOURCES).items():
+            if only is not None and (name in only) != only.get("_in", True):
+                continue
             try:
                 r = self.session.get(url, timeout=15)
                 feed = feedparser.parse(r.content)
@@ -256,7 +263,17 @@ class NewsCollector:
         """Вернуть новые новости. Telegram опрашивается каждый вызов, Truth Social раз в 30 с, остальное раз в минуту."""
         now = int(time.time())
         live = getattr(self, "live", None)
-        items = [] if (live and live.connected) else self._telegram(now)   # при живом Telegram веб-превью не опрашиваем
+        items = []
+        if not (live and live.connected):
+            # два яруса: самые быстрые каналы каждые tg_fast_sec, остальные раз в tg_slow_sec
+            fast = [c for c in (self.s.get("sources.telegram_fast") or []) if c in self.tg_channels]
+            slow = [c for c in self.tg_channels if c not in fast]
+            if now - self.last.get("tg_fast", 0) >= self.s.get("intervals.tg_fast_sec", 5):
+                self.last["tg_fast"] = now
+                items += self._telegram(now, fast)
+            if now - self.last.get("tg_slow", 0) >= self.s.get("intervals.tg_slow_sec", 30):
+                self.last["tg_slow"] = now
+                items += self._telegram(now, slow)
         if self.disclosure and now - self.last.get("disclosure", 0) >= 120:
             self.last["disclosure"] = now
             try:
@@ -276,9 +293,14 @@ class NewsCollector:
             if now - self.last["bybit"] >= 60:
                 self.last["bybit"] = now
                 items += self._bybit(now)
+        # RSS: быстрые ленты (sources.rss_fast) каждые rss_fast_sec, остальные раз в минуту
+        fast_rss = {n: 1 for n in (self.s.get("sources.rss_fast") or [])}
+        if fast_rss and now - self.last.get("rss_fast", 0) >= self.s.get("intervals.rss_fast_sec", 20):
+            self.last["rss_fast"] = now
+            items += self._rss(now, only={**fast_rss, "_in": True})
         if now - self.last["rss"] >= 60:
             self.last["rss"] = now
-            items += self._rss(now)
+            items += self._rss(now, only={**fast_rss, "_in": False} if fast_rss else None)
         if now - self.last["cryptopanic"] >= 60:
             self.last["cryptopanic"] = now
             items += self._cryptopanic(now)

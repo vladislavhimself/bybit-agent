@@ -1,0 +1,17 @@
+{
+ "n_all": 7,
+ "mean_s_r4_all": -0.161,
+ "hit4_all": 0.429,
+ "n_imp7": 0,
+ "mean_s_r4_imp7": null,
+ "hit4_imp7": null,
+ "by_type": {},
+ "by_importance": {
+  "<=4": {
+   "n": 7,
+   "s_r4": -0.161,
+   "hit4": 0.429
+  }
+ },
+ "late_entry_penalty_4h": -0.459
+}

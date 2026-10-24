@@ -122,7 +122,7 @@ class Bot:
         self.news_wake.set()
 
     def news_loop(self):
-        interval = self.s.get("intervals.news_poll_sec", 20)
+        interval = self.s.get("intervals.news_poll_sec", 5)   # ярусы внутри poll(): быстрые каналы 5 с, остальные 30 с
         next_poll = 0.0
         while not self.stop_flag.is_set():
             try:

@@ -47,7 +47,10 @@ news:
   full_text: true                # читать статью целиком по ссылке (кроме Telegram), а не только анонс из RSS
 
 intervals:
-  news_poll_sec: 20              # Telegram опрашивается каждые 20 с, RSS/анонсы раз в минуту
+  news_poll_sec: 5               # цикл новостей; внутри ярусы: быстрые Telegram-каналы 5 с, остальные 30 с, быстрые RSS 20 с
+  tg_fast_sec: 5
+  tg_slow_sec: 30
+  rss_fast_sec: 20
   scan_sec: 300
   manage_sec: 30
   balance_report_hours: 4
@@ -189,6 +192,10 @@ markets:
                           tass_agency, kommersant, vedomosti, banksta, centralbank_russia, minfin, smartlabnews,
                           alfa_investments, sberinvestments, headlines_for_traders, profitgate, MarketOverview,
                           bitkogan, truecon, realdonaldtrump_truth, TrumpTruthPosts, whitehouse]
+      # быстрый ярус (каждые 5 с, напрямую из Германии): ленты, где важное появляется первым
+      telegram_fast: [markettwits, cbrstocks, interfaxonline, rbc_news, headlines_for_traders, banksta, tass_agency]
+      # быстрые RSS (каждые 20 с через Москву): новостные ленты агентств
+      rss_fast: [interfax, rbc, tass, prime]
       rss:
         interfax: "https://www.interfax.ru/rss.asp"
         rbc: "https://rssexport.rbc.ru/rbcnews/news/30/full.rss"
