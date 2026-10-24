@@ -579,18 +579,27 @@ class Bot:
         p = self.s.get("signals") or {}
         if getattr(self, "paper_mode", False):
             return "paper_mode"
-        if p.get("trend_gate"):
+        strong_news = False
+        if sig.news_driven and sig.events:
+            top = max(sig.events, key=lambda e: e["importance"] * e.get("confidence", 1))
+            age_min = (time.time() - top["ts"]) / 60
+            if top["importance"] < p.get("news_entry_min_importance", 0) or age_min > p.get("news_entry_max_age_min", 1e9):
+                return "stale_news"
+            strong_news = True
+        if p.get("trend_gate") and not strong_news:
+            # ворота по тренду — для технических и слабых сигналов; сильная свежая новость идёт в любую сторону
             up = self.market_regime()
             td = ta.get("trend_d", 0)
             if sig.direction == "long" and (up is False or td < 0):
                 return "trend_gate"
             if sig.direction == "short" and up is True and td > 0:
                 return "trend_gate"
-        if sig.news_driven and sig.events:
-            top = max(sig.events, key=lambda e: e["importance"] * e.get("confidence", 1))
-            age_min = (time.time() - top["ts"]) / 60
-            if top["importance"] < p.get("news_entry_min_importance", 0) or age_min > p.get("news_entry_max_age_min", 1e9):
-                return "stale_news"
+        elif p.get("trend_gate") and strong_news:
+            up = self.market_regime()
+            against = (sig.direction == "long" and up is False) or (sig.direction == "short" and up is True)
+            if against and sig.tier in ("high", "conviction"):
+                sig.tier = "medium"   # новость против тренда рынка: размер не больше среднего
+                sig.reasons.append("новость против тренда рынка: размер не больше среднего")
         return None
 
     def update_paper_mode(self, now=None):
