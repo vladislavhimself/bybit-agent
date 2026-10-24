@@ -18,7 +18,8 @@ DB = "data/news_archive.db"
 
 
 def db():
-    c = sqlite3.connect(DB, timeout=120)
+    c = sqlite3.connect(DB, timeout=120, isolation_level=None)   # автокоммит: короткие транзакции, процессы не ждут друг друга
+    c.execute("PRAGMA journal_mode=WAL")   # сборщик и классификаторы пишут одновременно
     c.execute("CREATE TABLE IF NOT EXISTS msgs (channel TEXT, id INTEGER, ts INTEGER, text TEXT, PRIMARY KEY(channel, id))")
     c.execute("CREATE INDEX IF NOT EXISTS msgs_ts ON msgs(ts)")
     return c

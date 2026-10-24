@@ -34,7 +34,8 @@ INDEX = "IMOEXF"
 
 
 def db():
-    c = sqlite3.connect(DB, timeout=120)
+    c = sqlite3.connect(DB, timeout=120, isolation_level=None)   # автокоммит: короткие транзакции, процессы не ждут друг друга
+    c.execute("PRAGMA journal_mode=WAL")   # сборщик и классификаторы пишут одновременно
     c.execute("""CREATE TABLE IF NOT EXISTS events (channel TEXT, id INTEGER, ts INTEGER, model TEXT, relevant INTEGER,
                  event_type TEXT, importance INTEGER, direction TEXT, confidence REAL, affected TEXT, market_wide INTEGER,
                  already_priced INTEGER, surprise REAL, expected TEXT, title TEXT, PRIMARY KEY(channel, id, model))""")
@@ -81,11 +82,12 @@ def classify(args):
         seen[key] = ts
         n += 1
         title = re.sub(r"\s+", " ", text.split("\n")[0])[:200]
+        if n % 25 == 0:
+            c.commit()
+            print(f"{n} сообщений, релевантных {n_rel}, {time.time() - t0:.0f} с, расход {an.cost.today()['usd'] - cost0:.2f}$", flush=True)
         try:
             if not an.prefilter(title, text[:800]):
                 c.execute("INSERT OR IGNORE INTO skipped VALUES(?,?)", (ch, mid))
-                if n % 200 == 0:
-                    c.commit()
                 continue
             ev = an.classify(title, text[:4000], f"tg:{ch}", "")
         except Exception as e:  # noqa: BLE001
