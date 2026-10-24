@@ -34,7 +34,7 @@ INDEX = "IMOEXF"
 
 
 def db():
-    c = sqlite3.connect(DB)
+    c = sqlite3.connect(DB, timeout=120)
     c.execute("""CREATE TABLE IF NOT EXISTS events (channel TEXT, id INTEGER, ts INTEGER, model TEXT, relevant INTEGER,
                  event_type TEXT, importance INTEGER, direction TEXT, confidence REAL, affected TEXT, market_wide INTEGER,
                  already_priced INTEGER, surprise REAL, expected TEXT, title TEXT, PRIMARY KEY(channel, id, model))""")

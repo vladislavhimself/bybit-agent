@@ -18,7 +18,7 @@ DB = "data/news_archive.db"
 
 
 def db():
-    c = sqlite3.connect(DB)
+    c = sqlite3.connect(DB, timeout=120)
     c.execute("CREATE TABLE IF NOT EXISTS msgs (channel TEXT, id INTEGER, ts INTEGER, text TEXT, PRIMARY KEY(channel, id))")
     c.execute("CREATE INDEX IF NOT EXISTS msgs_ts ON msgs(ts)")
     return c
