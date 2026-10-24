@@ -282,15 +282,18 @@ class Executor:
                 closed.append(t)
                 continue
 
+            # новостную сделку держим минимум news_min_hold_hours: по архиву плюс набирается к суткам, а не к 4 часам;
+            # стоп, безубыток и тейки работают, а защита прибыли и «застряла» ждут
+            min_hold = r.get("news_min_hold_hours", 0) if t.get("news_driven") else 0
             # защита прибыли: от пика откатились больше чем на giveback_r
-            if mfe >= r.get("giveback_min_peak_r", 0.8) and r_now <= mfe - r.get("giveback_r", 0.6):
+            if hours >= min_hold and mfe >= r.get("giveback_min_peak_r", 0.8) and r_now <= mfe - r.get("giveback_r", 0.6):
                 self._close_now(t, f"защита прибыли: пик был {mfe:.2f}R, сейчас {r_now:.2f}R")
                 closed.append(t)
                 continue
 
             # сделка застряла: в плюсе, но пик не обновлялся stall_hours
             stall = r.get("stall_hours", 12)
-            if 0.1 <= r_now < 1.0 and (time.time() - mfe_ts) / 3600 >= stall and hours >= stall:
+            if hours >= min_hold and 0.1 <= r_now < 1.0 and (time.time() - mfe_ts) / 3600 >= stall and hours >= stall:
                 self._close_now(t, f"сделка застряла: {r_now:.2f}R без прогресса {stall}ч")
                 closed.append(t)
                 continue

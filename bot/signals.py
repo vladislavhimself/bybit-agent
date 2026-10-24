@@ -20,7 +20,10 @@ class Signal:
     event_key: str = ""       # новость, на которой построен сигнал (для лимита сделок на одно событие)
 
 
-def news_score(base, events, min_importance, now=None, playbook=None, df1h=None, psych_cfg=None):
+def news_score(base, events, min_importance, now=None, playbook=None, df1h=None, psych_cfg=None, mode=None):
+    """mode="stock_long_only": в счёт идут только бычьи новости по конкретной бумаге. Архив Мосбиржи 2024-2026
+    (25 791 событие): общерыночные и медвежьи новости направление не предсказывают (попадание 48-50%, ход ~0),
+    плюс есть только у бычьих новостей по бумаге важностью 7+ (+0.14% за 4 ч, +0.33% за сутки)."""
     now = now or time.time()
     total, reasons, used = 0.0, [], []
     for e in events:
@@ -28,6 +31,8 @@ def news_score(base, events, min_importance, now=None, playbook=None, df1h=None,
             continue
         direct = base in e["affected"]
         if not direct and not e["market_wide"]:
+            continue
+        if mode == "stock_long_only" and (e.get("market_wide") or not direct or e["direction"] != "bullish"):
             continue
         age_h = (now - e["ts"]) / 3600
         if age_h > e["horizon_hours"] or age_h < 0:
@@ -123,7 +128,8 @@ def build_signal(symbol, base, ta, ticker, oi_hist, events, params, now=None, pl
     """diag: словарь, куда записывается причина отказа (для сводки «почему нет сделок»)."""
     p = params
     ns, nreasons, used = news_score(base, events, p["min_news_importance"], now,
-                                    playbook if p.get("use_playbook", True) else None, df1h, psych_cfg)
+                                    playbook if p.get("use_playbook", True) else None, df1h, psych_cfg,
+                                    mode=p.get("news_mode"))
     ps, preasons = positioning_score(ticker, oi_hist, ta, whale_net, mood)
     crowd_s, crowd_reasons = psychology.crowd(ticker, mood, psych_cfg or {})
     preasons += crowd_reasons

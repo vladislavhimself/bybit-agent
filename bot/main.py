@@ -183,8 +183,10 @@ class Bot:
                     if full:
                         body = full   # статья целиком: направление часто ясно только из тела, а не из заголовка
                 ev = self.analyst.classify(it["title"], body, it["source"], lessons)
-            if not ev or not ev["relevant"] or ev["already_priced"]:
+            if not ev or not ev["relevant"]:
                 continue
+            if ev["already_priced"] and self.s.get("signals.drop_already_priced", True):
+                continue   # на Мосбирже выключено: по архиву «уже в цене» события шли в сторону прогноза не хуже остальных
             self.j.add_event(it["id"], it["published_ts"], ev, it["title"])
             lag = time.time() - it["published_ts"]
             log.info("Событие [%s, imp %d, %s, %s] задержка %.0fс: %s", ev["event_type"], ev["importance"],
