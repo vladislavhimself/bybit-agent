@@ -34,6 +34,7 @@ from .disclosure import Disclosure
 from .eventplay import EventPlay
 from .expectations import ExpectationsMemory
 from .shadow import ShadowBook
+from .tg_live import TelegramLive
 from .signals import build_signal
 from .ta import snapshot
 from .whales import WhaleFlows, parse as parse_whale
@@ -84,6 +85,8 @@ class Bot:
         if self.reviewer:
             self.reviewer.shadow = self.shadow   # разбор учитывает и теневые сделки
         self.news = NewsCollector(self.ex, self.j, self.s)
+        self.tg_live = TelegramLive(self.s.get("sources.telegram_channels") or [], self.raw_q, self.news_wake, self.s)
+        self.news.live = self.tg_live
         self.seen_titles = {}
         self.paper_mode = bool(self.j.kv_get("paper_mode", False))
         self.last_known, self.last_known_ts, self.broker_down_since = (0.0, [], {"wallet": 0.0}), time.time(), None   # до первого ответа биржи
@@ -660,6 +663,7 @@ class Bot:
         equity = bal["equity"]
         self.risk.check(equity, realized=bal["wallet"])
         threading.Thread(target=self.news_loop, daemon=True, name="news").start()
+        self.tg_live.start()
         x_on = self.xstream.start() if self.xstream else False
         m = self.risk.metrics(equity)
         mode = {"demo": "demo-счёт, виртуальные деньги", "testnet": "testnet", "live": "РЕАЛЬНЫЕ ДЕНЬГИ"}[self.s.mode]
@@ -671,7 +675,8 @@ class Bot:
                       f"весь счёт {fmt.money(equity)} {fmt.CUR}"),
             fmt.block("Источники", f"Аналитик {'включён' if self.analyst else 'ВЫКЛЮЧЕН (нет ANTHROPIC_API_KEY)'}; "
                       f"{len(self.news.tg_channels)} Telegram-каналов, {len(self.s.get('sources.rss') or {})} RSS-лент"
-                      + (", раскрытие эмитентов" if self.market == "moex" else ", анонсы бирж") + (", поток X" if x_on else "")),
+                      + (", раскрытие эмитентов" if self.market == "moex" else ", анонсы бирж") + (", поток X" if x_on else "")
+                      + ("; Telegram в реальном времени" if self.tg_live.enabled else "; Telegram по опросу раз в 20 с")),
         ]), html=True)
         while True:
             now = time.time()

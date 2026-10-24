@@ -255,7 +255,8 @@ class NewsCollector:
     def poll(self):
         """Вернуть новые новости. Telegram опрашивается каждый вызов, Truth Social раз в 30 с, остальное раз в минуту."""
         now = int(time.time())
-        items = self._telegram(now)
+        live = getattr(self, "live", None)
+        items = [] if (live and live.connected) else self._telegram(now)   # при живом Telegram веб-превью не опрашиваем
         if self.disclosure and now - self.last.get("disclosure", 0) >= 120:
             self.last["disclosure"] = now
             try:
