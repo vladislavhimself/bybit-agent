@@ -63,6 +63,16 @@ class Analytics:
         sh, tr = self.shadows(days), self.trades(days)
         rep = {"days": days, "shadows_n": len(sh), "trades_n": len(tr)}
         if sh:
+            def _fsplit(r):
+                try:
+                    f = (json.loads(r.get('comps') or '{}') if isinstance(r.get('comps'), str) else (r.get('comps') or {})).get('factor')
+                except Exception:
+                    f = None
+                if f is None or abs(f) < 0.15:
+                    return 'фактор нейтрален/нет'
+                return 'фактор за' if (f > 0) == (r.get('side') == 'long') else 'фактор против'
+            rep["shadow_by_factor"] = _agg(sh, _fsplit, lambda r: r["r"]) if sh else {}
+
             rep["shadow_by_reason"] = _agg(sh, lambda r: r["reason"], lambda r: r["r"])
             rep["shadow_by_hour"] = _agg(sh, lambda r: f"{r['hour']:02d}", lambda r: r["r"])
             rep["shadow_by_regime"] = _agg(sh, lambda r: r.get("regime") or "?", lambda r: r["r"])
@@ -141,6 +151,8 @@ class Analytics:
                 parts.append(fmt.block("По причине выхода", *[f"{fmt.esc(k)}: {v['n']}, {v['avg_r']:+.2f}R" for k, v in list(rep["trades_by_exit"].items())[:6]]))
         else:
             parts.append(fmt.block("Сделки", "закрытых нет"))
+        if rep.get("shadow_by_factor"):
+            parts.append(fmt.block("Тени по макрофактору (Brent/рубль/RGBI)", *[f"{k}: {v['n']}, {v['avg_r']:+.2f}R, в плюс {v['win'] * 100:.0f}%" for k, v in rep["shadow_by_factor"].items()]))
         if rep.get("shadow_by_reason"):
             parts.append(fmt.block("Тени по причине отказа", *[f"{REASON_RU.get(k, k)}: {v['n']}, {v['avg_r']:+.2f}R, в плюс {v['win'] * 100:.0f}%" for k, v in rep["shadow_by_reason"].items()]))
             parts.append(fmt.block("Тени по силе сигнала", *[f"{k}: {v['n']}, {v['avg_r']:+.2f}R" for k, v in sorted(rep["shadow_by_strength"].items())]))

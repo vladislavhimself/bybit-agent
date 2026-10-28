@@ -124,7 +124,7 @@ def _no(diag, reason, strength):
 
 
 def build_signal(symbol, base, ta, ticker, oi_hist, events, params, now=None, playbook=None, whale_net=0.0, mood=0.0,
-                 df1h=None, psych_cfg=None, diag=None):
+                 df1h=None, psych_cfg=None, diag=None, factor=0.0, factor_text=""):
     """diag: словарь, куда записывается причина отказа (для сводки «почему нет сделок»)."""
     p = params
     ns, nreasons, used = news_score(base, events, p["min_news_importance"], now,
@@ -139,8 +139,14 @@ def build_signal(symbol, base, ta, ticker, oi_hist, events, params, now=None, pl
     # Чистый ТА без подтверждения до порога почти не дотягивает (бэктест показал, что у него нет преимущества).
     total = max(-1.0, min(1.0, nw * ns + tw * ts + pw * ps))
 
-    comps = {"news": round(ns, 3), "ta": round(ts, 3), "positioning": round(ps, 3), "total": round(total, 3)}
-    nonzero = [v for v in (ns, ts, ps) if abs(v) > 0.05]
+    fw = float(p.get("factor_weight", 0.0) or 0.0)
+    if factor and fw:
+        total += fw * factor
+    if factor_text:
+        preasons.append(factor_text + ("" if fw else " (в силу не входит, только учёт)"))
+    comps = {"news": round(ns, 3), "ta": round(ts, 3), "positioning": round(ps, 3), "factor": round(factor or 0.0, 3),
+             "total": round(total, 3)}
+    nonzero = [v for v in (ns, ts, ps) if abs(v) > 0.05] + ([factor] if factor and fw and abs(factor) > 0.05 else [])
     sign = 1 if total > 0 else -1
     agreement = (sum(1 for v in nonzero if (v > 0) == (sign > 0)) / len(nonzero)) if nonzero else 0.0
     strength = abs(total) * (0.7 + 0.3 * agreement)
@@ -167,7 +173,8 @@ def build_signal(symbol, base, ta, ticker, oi_hist, events, params, now=None, pl
     ]
 
     # Во флэте торгуем только от сильных новостей
-    if ta["regime"] == "range" and abs(ns) < 0.3:
+    if ta["regime"] == "range" and abs(ns) < 0.3 and not (sign < 0 and p.get("range_shorts")):
+        # Мосбиржа 2020–2026: шорты во флэте PF 1.21 (2024–2026 PF 1.4–2.2), лонги во флэте PF 0.9 — пускаем только шорты
         return _no(diag, "range", strength)
     # В экстремальной волатильности стоп 1.5-2 ATR выбивает шумом: без весомой новости не входим
     if ta["regime"] == "high_vol" and abs(ns) < 0.3:

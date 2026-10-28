@@ -306,6 +306,11 @@ class MoexExchange:
     # ---------- рыночные данные ----------
     def klines(self, symbol, interval="60", limit=200, end=None):
         it = self.instruments()[symbol]
+        return self.candles_uid(it["uid"], interval, limit, end, it["mult"])
+
+    def candles_uid(self, uid, interval="60", limit=200, end=None, mult=1.0):
+        """Свечи по uid инструмента: акции, фьючерсы и индикативы (Brent, RGBI, курс доллара)."""
+        it = {"uid": uid, "mult": mult}
         iv, mins = INTERVALS[str(interval)]
         end_ts = int(end / 1000) if end else int(time.time())
         # торги не круглосуточные: берём запас по времени, чтобы набрать нужное число свечей

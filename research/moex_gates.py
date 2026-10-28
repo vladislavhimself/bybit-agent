@@ -37,3 +37,9 @@ for sg, gg in rng.groupby("sg"):
     report(gg, f"      {'лонг' if sg > 0 else 'шорт'} во флэте")
 for y, gg in rng.groupby(rng.t.dt.year):
     report(gg, f"      {y} флэт")
+print("\n== Флэтовые шорты по годам ==")
+for y, gg in rng[rng.sg < 0].groupby(rng[rng.sg < 0].t.dt.year):
+    report(gg, f"      {y} шорт во флэте")
+print("== Флэтовые лонги по годам ==")
+for y, gg in rng[rng.sg > 0].groupby(rng[rng.sg > 0].t.dt.year):
+    report(gg, f"      {y} лонг во флэте")

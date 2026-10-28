@@ -37,6 +37,8 @@ from .expectations import ExpectationsMemory
 from .shadow import ShadowBook
 from .tg_live import TelegramLive
 from .driver import DriverCheck
+from .factors import Factors
+from .divcal import DivCalendar
 from .signals import build_signal
 from .ta import snapshot
 from .whales import WhaleFlows, parse as parse_whale
@@ -81,6 +83,8 @@ class Bot:
         self.mood = MarketMood()
         self.analyst = (Analyst(self.s, self.j, self.playbook, self.cal, self.whales, self.mood)
                         if self.s.has_anthropic else None)
+        self.factors = Factors(self.s, self.ex) if hasattr(self.ex, "candles_uid") and self.s.get("signals.factor_map") else None
+        self.divcal = DivCalendar(self.s, self.ex) if hasattr(self.ex, "candles_uid") and self.s.get("risk.div_block_days") else None
         self.exe.driver = (DriverCheck(self.s, self.analyst, self.j, self.ex)
                            if self.analyst and (self.s.get("risk.driver_check") or {}).get("mode") else None)
         self.reviewer = Reviewer(self.s, self.j, self.tg) if self.s.has_anthropic else None
@@ -326,9 +330,15 @@ class Bot:
                 continue
             df1h = self.cache.get(sym, (0, None, None, None, None))[4]
             dg = {}
+            fsc, ftxt = self.factors.score_for(inst[sym]["base"]) if self.factors else (0.0, "")
             sig = build_signal(sym, inst[sym]["base"], ta, tk, oi, events, params, playbook=self.playbook,
                                whale_net=self.whales.net_score(inst[sym]["base"]), mood=self.mood.score(),
-                               df1h=df1h, psych_cfg=self.s.get("psychology") or {}, diag=dg)
+                               df1h=df1h, psych_cfg=self.s.get("psychology") or {}, diag=dg, factor=fsc, factor_text=ftxt)
+            if sig and self.divcal and self.divcal.blocks(sym, inst):
+                log.info("%s: %s", sym, self.divcal.blocks(sym, inst))
+                funnel["div_gap"] += 1
+                self._shadow_from_signal(sig, ta, "div_gap")
+                sig = None
             if sig:
                 candidates.append((sig, ta, tk))
             else:
@@ -535,7 +545,12 @@ class Bot:
                 if self.reviewer:
                     self.reviewer.run(apply=self._auto_apply())
             elif c == "/calendar":
-                self.tg.send(fmt.block("📅 Календарь", fmt.esc(self.cal.context_text(96))), html=True)
+                parts = [fmt.block("📅 Календарь", fmt.esc(self.cal.context_text(96)))]
+                if self.divcal:
+                    parts.append(fmt.block("Дивидендные отсечки (30 дн.)", *([fmt.esc(x) for x in self.divcal.text(30)] or ["нет"])))
+                if self.factors:
+                    parts.append(fmt.block("Факторы", *([fmt.esc(x) for x in self.factors.text()] or ["нет данных"])))
+                self.tg.send("\n\n".join(parts), html=True)
             elif c == "/shadow":
                 self.tg.send("👻 <b>ТЕНЕВЫЕ СДЕЛКИ</b> (сигналы, которые бот не взял, проверенные по факту)\n\n"
                              + fmt.block("За 7 дней", fmt.esc(self.shadow.summary_text(7, top=10, detailed=True))) + "\n\n"
@@ -707,6 +722,8 @@ class Bot:
     def run(self):
         iv = self.s.get("intervals")
         self.cal.refresh(force=True)
+        if self.divcal:
+            threading.Thread(target=self.divcal.refresh, kwargs={"force": True}, daemon=True, name="divcal").start()
         bal = self.ex.balances()
         equity = bal["equity"]
         self.risk.check(equity, realized=bal["wallet"])
@@ -732,6 +749,8 @@ class Bot:
             now = time.time()
             try:
                 self.cal.refresh()
+                if self.divcal and time.time() - self.divcal.ts > 6 * 3600:
+                    threading.Thread(target=self.divcal.refresh, daemon=True, name="divcal").start()
                 self.mood.refresh()
                 if self.expect and self.expect.due(now):
                     self.expect.refresh(now)
