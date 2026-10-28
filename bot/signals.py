@@ -199,6 +199,18 @@ def build_signal(symbol, base, ta, ticker, oi_hist, events, params, now=None, pl
         tier = "medium"
     else:
         tier = "low"
+    if p.get("tier_by_agreement"):
+        # Мосбиржа, сделки и тени: high по новостному баллу −0.48R, low/medium в плюсе; сила 0.7+ в тенях хуже 0.4–0.6.
+        # Большой размер только там, где техника и тренд 4ч согласны с направлением
+        ta_agree = abs(ts) > 0.05 and (ts > 0) == (sign > 0)
+        t4 = ta.get("trend_4h", 0)
+        trend_agree = t4 != 0 and (t4 > 0) == (sign > 0) and ta["regime"] in ("trend_up", "trend_down")
+        if not ta_agree and tier != "low":
+            tier = "low"
+            reasons.append("техника не подтверждает направление: только малый размер")
+        elif not trend_agree and tier in ("high", "conviction"):
+            tier = "medium"
+            reasons.append("тренд 4ч не подтверждает: размер не больше среднего")
     if ta["regime"] == "high_vol":
         tier = {"conviction": "high", "high": "medium", "medium": "low", "low": "low"}[tier]
         reasons.append("экстремальная волатильность: размер понижен")

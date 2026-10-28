@@ -138,6 +138,16 @@ class RiskManager:
                 "halted": self.halted, "halt_reason": self.halt_reason}
 
     # ---------- проверки перед входом ----------
+    def base_of(self, symbol):
+        """Базовый актив: для фьючерса Мосбиржи — тикер акции/индекса, для акции и крипты — сам тикер."""
+        try:
+            inst = self.ex.instruments().get(symbol) if hasattr(self.ex, "instruments") else None
+            if inst and inst.get("base"):
+                return inst["base"]
+        except Exception:  # noqa: BLE001
+            pass
+        return fmt.base_of(symbol)
+
     def can_open(self, symbol, open_trades, positions, equity, direction=None, event_key="", tier=None):
         """open_trades: открытые сделки + отложенные ордера (у каждого symbol, side, entry, stop_init, qty, event_key).
         При отказе код причины кладётся в self.last_reject (для теневых сделок)."""
@@ -147,6 +157,20 @@ class RiskManager:
         if any(x["symbol"] == symbol for x in open_trades) or any(p["symbol"] == symbol for p in positions):
             self.last_reject = "symbol_busy"
             return False, "уже есть позиция или ордер по символу"
+        # одна компания — одна позиция (акция и фьючерс на неё — одна и та же ставка), и не больше N на сектор:
+        # 27.10 бот открыл пять лонгов нефтегаза на одной истории про Ормуз, это одна сделка с пятикратным риском
+        base = self.base_of(symbol)
+        held = [self.base_of(x["symbol"]) for x in open_trades] + [self.base_of(p["symbol"]) for p in positions]
+        if r.get("max_per_base") and held.count(base) >= r["max_per_base"]:
+            self.last_reject = "same_base"
+            return False, f"по {base} уже есть позиция (акция или фьючерс)"
+        sectors = r.get("sectors") or {}
+        sec = next((k for k, v in sectors.items() if base in v), None)
+        if sec and r.get("max_per_sector"):
+            n_sec = sum(1 for b in set(held) if b in sectors[sec])
+            if n_sec >= r["max_per_sector"]:
+                self.last_reject = "sector"
+                return False, f"в секторе {sec} уже {n_sec} позиции (лимит {r['max_per_sector']})"
         cd = r.get("symbol_cooldown_hours", 0)
         if cd and direction:
             last = self.j.last_entry_ts(symbol, "Buy" if direction == "long" else "Sell")

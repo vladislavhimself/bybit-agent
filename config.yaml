@@ -146,6 +146,7 @@ llm:
   cheap_model: claude-haiku-5-5  # предварительный фильтр новостей (дёшево)
   review_model: claude-opus-5-5  # разбор сделок и самообучение
   daily_budget_usd: 4            # при превышении до конца суток всё переводится на дешёвую модель
+  workers: 4                     # параллельных разборов новостей: в час пик очередь к модели доходила до 20 минут
   # Второстепенные источники (пересказы, обзоры): новости из них разбирает дешёвая модель
   cheap_sources: [ambcrypto, utoday, newsbtc, beincrypto, cryptonews, cryptoslate, coinjournal, thedefiant,
                   tg:crypto_headlines, tg:incrypted, tg:ForkLog, tg:MuskTweets, tg:whalebotalerts]
@@ -243,6 +244,16 @@ markets:
       driver_check: {mode: shadow, min_peak_r: 2.0, every_min: 30}   # модель оценивает, жив ли драйвер движения; shadow = только записывать вердикты
       giveback_tiers: [[1.5, 1.5], [3.0, 1.0], [5.0, 0.6]]   # research/moex_trail.py: поводок короче с ростом прибыли, +12% к итогу за 7 лет
       max_hours_in_trade: 96
+      max_per_base: 1                   # одна компания — одна позиция (акция или фьючерс)
+      max_per_sector: 2                 # не больше двух позиций в одном секторе: 27.10 было пять лонгов нефтегаза на одной новости
+      sectors:
+        oil_gas: [GAZP, LKOH, ROSN, NVTK, TATN, SNGS, SNGSP, TATNP, TRNFP, BANE, SIBN, RNFT]
+        banks: [SBER, SBERP, VTBR, T, MOEX, SVCB, BSPB, CBOM, SFIN]
+        metals: [GMKN, PLZL, CHMF, NLMK, MAGN, ALRS, RUAL, MTLR, SELG, UGLD, ENPG]
+        index: [IMOEX, RTS]
+        retail_tech: [YDEX, OZON, X5, MGNT, POSI, VKCO, HEAD, LENT, ASTR, DIAS, SOFL]
+        transport: [AFLT, NMTP, FLOT, FESH]
+        telecom_energy: [MTSS, RTKM, IRAO, HYDR, FEES, UPRO, MSNG, PHOR, AKRN]
       news_min_hold_hours: 24           # архив новостей: плюс у бычьих новостей по бумаге набирается к суткам (+0.33%), не к 4 ч (+0.14%)
     signals:
       use_playbook: false               # статистика по BTC к акциям не относится
@@ -255,6 +266,7 @@ markets:
       news_entry_min_importance: 7      # новостной вход только на сильной новости (расхождение с ожиданиями всегда >=7)...
       news_entry_max_age_min: 15        # ...и свежей; остальное уходит в тени для статистики
       ta_long_mult: 0.85                # 7 лет истории: технические лонги PF 0.83, шорты 1.16 — лонг без новости режем
+      tier_by_agreement: true           # большой размер только при согласии техники и тренда 4ч (high по новостям был −0.48R)
     calendar:
       us_macro: true
       fixed_events:

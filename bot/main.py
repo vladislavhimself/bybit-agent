@@ -4,6 +4,7 @@
 сопровождение позиций -> периодический скан рынка -> отчёты -> самообучение."""
 import logging
 import os
+import itertools
 import queue
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -100,6 +101,10 @@ class Bot:
                 self.crowd = Crowd(self.s, self.analyst, self.j)
                 self.analyst.expectations, self.analyst.crowd = self.expect, self.crowd
         self.events_q = queue.Queue()
+        self.analyze_q = queue.PriorityQueue()   # новости на разбор моделью: (приоритет, номер, новость)
+        self._seq = itertools.count()
+        self.whale_lock = threading.Lock()
+        self._lessons_cache = (0.0, "")
         self.raw_q = queue.Queue()          # посты из потока X, минуя опрос
         self.news_wake = threading.Event()
         # живой Telegram (Telethon) — только если заданы TELEGRAM_API_ID/HASH/SESSION; без них выключен, работает ярусный опрос
@@ -144,20 +149,21 @@ class Bot:
                 if fresh:
                     if self.eventplay:
                         self.eventplay.flash(fresh)   # решение ЦБ: за секунды, без очереди к модели
-                    self.process_news(fresh)
+                    self.enqueue_news(fresh)
             except Exception as e:  # noqa: BLE001
                 log.error("Поток новостей: %s\n%s", e, traceback.format_exc())
             self.news_wake.wait(timeout=max(0.5, next_poll - time.time()))
             self.news_wake.clear()
 
-    def process_news(self, fresh):
+    def enqueue_news(self, fresh):
+        """Сборщик только раскладывает новости по очереди с приоритетом; разбирают их рабочие потоки.
+        Раньше сбор и разбор шли в одном потоке по очереди: в час пик новость ждала модель 2–20 минут."""
         log.info("Новых новостей: %d", len(fresh))
-        whale_srcs = {f"tg:{c}" for c in (self.s.get("sources.whale_channels") or [])}
-        lessons = self.reviewer.lessons_text() if self.reviewer else ""
         import re as _re
+        fast = {f"tg:{c}" for c in (self.s.get("sources.telegram_fast") or [])} | {"disclosure"}
+        fast_rss = set(self.s.get("sources.rss_fast") or [])
         for it in fresh:
             self.j.mark_analyzed(it["id"])
-            ev = None
             # один и тот же заголовок из десяти каналов (особенно в день ЦБ): анализируем один раз за 2 часа
             key = _re.sub(r"[^a-zа-яё0-9%]+", " ", (it.get("title") or "").lower()).strip()[:70]
             now_ts = time.time()
@@ -167,29 +173,61 @@ class Bot:
                 self.seen_titles[key] = now_ts
                 if len(self.seen_titles) > 5000:
                     self.seen_titles = {k: v for k, v in self.seen_titles.items() if now_ts - v < 7200}
+            src = it["source"]
+            prio = 0 if src in fast or src in fast_rss else (1 if src.startswith("tg:") else 2)
+            self.analyze_q.put((prio, next(self._seq), it))
+        qn = self.analyze_q.qsize()
+        if qn > 50:
+            log.warning("очередь на разбор: %d новостей", qn)
+
+    def _lessons(self):
+        if not self.reviewer:
+            return ""
+        ts, txt = self._lessons_cache
+        if time.time() - ts > 120:
+            txt = self.reviewer.lessons_text()
+            self._lessons_cache = (time.time(), txt)
+        return txt
+
+    def news_worker(self):
+        while not self.stop_flag.is_set():
+            try:
+                _, _, it = self.analyze_q.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            try:
+                self._analyze_item(it)
+            except Exception as e:  # noqa: BLE001
+                log.error("Разбор новости: %s\n%s", e, traceback.format_exc())
+
+    def _analyze_item(self, it):
+        whale_srcs = {f"tg:{c}" for c in (self.s.get("sources.whale_channels") or [])}
+        ev = None
+        if True:
             if it["source"] in whale_srcs:
                 ev = parse_whale(it["summary"])
                 if ev:
                     if ev["usd"] < self.s.get("sources.whale_min_usd", 50_000_000):
-                        continue
-                    self.whales.add(ev)
+                        return
+                    with self.whale_lock:
+                        self.whales.add(ev)
                 elif not self.analyst:
-                    continue
+                    return
             if ev is None:
                 if not self.analyst:
-                    continue
+                    return
                 if not self.analyst.prefilter(it["title"], it["summary"]):
-                    continue
+                    return
                 body = it["summary"]
                 if not it["source"].startswith("tg:") and it["source"] != "disclosure" and self.s.get("news.full_text", True):
                     full = article.fetch_text(it.get("url"))
                     if full:
                         body = full   # статья целиком: направление часто ясно только из тела, а не из заголовка
-                ev = self.analyst.classify(it["title"], body, it["source"], lessons)
+                ev = self.analyst.classify(it["title"], body, it["source"], self._lessons())
             if not ev or not ev["relevant"]:
-                continue
+                return
             if ev["already_priced"] and self.s.get("signals.drop_already_priced", True):
-                continue   # на Мосбирже выключено: по архиву «уже в цене» события шли в сторону прогноза не хуже остальных
+                return   # на Мосбирже выключено: по архиву «уже в цене» события шли в сторону прогноза не хуже остальных
             self.j.add_event(it["id"], it["published_ts"], ev, it["title"])
             lag = time.time() - it["published_ts"]
             log.info("Событие [%s, imp %d, %s, %s] задержка %.0fс: %s", ev["event_type"], ev["importance"],
@@ -673,6 +711,8 @@ class Bot:
         equity = bal["equity"]
         self.risk.check(equity, realized=bal["wallet"])
         threading.Thread(target=self.news_loop, daemon=True, name="news").start()
+        for i in range(int(self.s.get("llm.workers", 4) or 1)):
+            threading.Thread(target=self.news_worker, daemon=True, name=f"analyst-{i}").start()
         self.tg_live.start()
         x_on = self.xstream.start() if self.xstream else False
         m = self.risk.metrics(equity)
