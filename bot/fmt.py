@@ -136,12 +136,7 @@ def balance_message(equity, m, positions, stats, cap, llm=None, next_macro=None,
     parts = ["💼 <b>БАЛАНС</b>"]
     if cap:
         acct = m["tradable"] + m["reserve"] - cap
-        lines = [f"{money(m['tradable'])} {CUR} (лимит {money(cap)})", f"Счёт к лимиту: {signed(acct)} {CUR}"]
-        if stats.get("n"):
-            lines.append(f"По закрытым сделкам: {signed(stats['pnl'])} {CUR} ({stats['n']} сделок, с комиссией)")
-            if abs(stats["pnl"] - acct) > 500:
-                lines.append("Разница — учёт песочницы: вариационная маржа по фьючерсам списывается в клиринг отдельно")
-        parts.append(block("Торговый капитал", *lines))
+        parts.append(block("Торговый капитал", f"{money(m['tradable'])} {CUR} (лимит {money(cap)})", f"Счёт к лимиту: {signed(acct)} {CUR}"))
     else:
         parts.append(block("Торговый капитал", f"{money(m['tradable'])} {CUR}"))
     parts.append(block("Резерв прибыли", f"{money(m['reserve'])} {CUR} | на счёте {money(equity)} {CUR}"))

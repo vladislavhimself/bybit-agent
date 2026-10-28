@@ -240,6 +240,7 @@ markets:
       breakeven_r: 0.7
       giveback_r: 1.2
       giveback_min_peak_r: 1.5
+      driver_check: {mode: shadow, min_peak_r: 2.0, every_min: 30}   # модель оценивает, жив ли драйвер движения; shadow = только записывать вердикты
       giveback_tiers: [[1.5, 1.5], [3.0, 1.0], [5.0, 0.6]]   # research/moex_trail.py: поводок короче с ростом прибыли, +12% к итогу за 7 лет
       max_hours_in_trade: 96
       news_min_hold_hours: 24           # архив новостей: плюс у бычьих новостей по бумаге набирается к суткам (+0.33%), не к 4 ч (+0.14%)

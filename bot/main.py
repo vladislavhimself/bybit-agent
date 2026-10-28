@@ -35,6 +35,7 @@ from .eventplay import EventPlay
 from .expectations import ExpectationsMemory
 from .shadow import ShadowBook
 from .tg_live import TelegramLive
+from .driver import DriverCheck
 from .signals import build_signal
 from .ta import snapshot
 from .whales import WhaleFlows, parse as parse_whale
@@ -79,6 +80,8 @@ class Bot:
         self.mood = MarketMood()
         self.analyst = (Analyst(self.s, self.j, self.playbook, self.cal, self.whales, self.mood)
                         if self.s.has_anthropic else None)
+        self.exe.driver = (DriverCheck(self.s, self.analyst, self.j, self.ex)
+                           if self.analyst and (self.s.get("risk.driver_check") or {}).get("mode") else None)
         self.reviewer = Reviewer(self.s, self.j, self.tg) if self.s.has_anthropic else None
         if self.reviewer:
             self.reviewer.analytics = self.analytics
@@ -520,7 +523,11 @@ class Bot:
             elif c == "/analytics":
                 parts = cmd.split()
                 days = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 30
-                self.tg.send(self.analytics.text(days), html=True)
+                txt = self.analytics.text(days)
+                drv = self.exe.driver.summary_text(days) if self.exe.driver else None
+                if drv:
+                    txt += "\n\n" + fmt.block("Драйвер движения (тени)", *[fmt.esc(x) for x in drv])
+                self.tg.send(txt, html=True)
             elif c == "/log":
                 # последние строки журнала: нужны, когда к машине нет доступа по SSH
                 try:
@@ -728,6 +735,12 @@ class Bot:
                         log.warning("проверка теневых сделок: %s", e)
                     closed = self.exe.manage()
                     self.closed_since_review += len(closed)
+                    if self.exe.driver and now - self.last.get("driver_eval", 0) >= 1800:
+                        self.last["driver_eval"] = now
+                        try:
+                            self.exe.driver.evaluate_due()
+                        except Exception as e:  # noqa: BLE001
+                            log.warning("проверка вердиктов драйвера: %s", e)
                     self.exe.reconcile()
                 event_block = self.eventplay.tick(now, equity, positions) if self.eventplay else False
                 if now - self.last["scan"] >= iv["scan_sec"]:

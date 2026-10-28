@@ -288,6 +288,8 @@ class Executor:
             # защита прибыли: от пика откатились больше чем на giveback_r. Ступени (giveback_tiers: [[пик R, откат R], ...]):
             # чем выше забрались, тем короче поводок (7 лет Мосбиржи: 1.5R до 3R, 1.0R с 3R, 0.6R с 5R даёт +12% к итогу,
             # жёсткая защита 0.6R режет треть прибыли, «держать до конца» = как сейчас)
+            if getattr(self, "driver", None):
+                self.driver.maybe_check(t, r_now, mfe, mark, risk_dist, hours)   # пока только тени: вердикт записывается, не применяется
             gb_r, gb_min = r.get("giveback_r", 0.6), r.get("giveback_min_peak_r", 0.8)
             for pk, gb in (r.get("giveback_tiers") or []):
                 if mfe >= pk:
