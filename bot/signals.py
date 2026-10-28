@@ -32,7 +32,9 @@ def news_score(base, events, min_importance, now=None, playbook=None, df1h=None,
         direct = base in e["affected"]
         if not direct and not e["market_wide"]:
             continue
-        if mode == "stock_long_only" and (e.get("market_wide") or not direct or e["direction"] != "bullish"):
+        # заголовок про геополитику с девятью тикерами в affected — по сути общерыночный, даже если модель не поставила флаг
+        wide = e.get("market_wide") or len(e.get("affected") or []) >= 5
+        if mode == "stock_long_only" and (wide or not direct or e["direction"] != "bullish"):
             continue
         age_h = (now - e["ts"]) / 3600
         if age_h > e["horizon_hours"] or age_h < 0:
