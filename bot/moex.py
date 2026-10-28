@@ -483,7 +483,10 @@ class MoexExchange:
             entry = q2f(x.get("averagePositionPrice")) or q2f(x.get("averagePositionPriceFifo"))
             mark = q2f(x.get("currentPrice")) or entry
             mult = inst[sym]["mult"]
-            if x.get("instrumentType") == "futures":
+            if self.price_based_pnl:
+                # по ценам, как и результат сделки: varMargin песочницы по фьючерсу через клиринг завышает/занижает плюс
+                upnl = (mark - entry) * lots * mult
+            elif x.get("instrumentType") == "futures":
                 upnl = q2f(x.get("varMargin")) if x.get("varMargin") is not None else (mark - entry) * lots * mult
             else:
                 upnl = q2f(x.get("expectedYield")) if x.get("expectedYield") is not None else (mark - entry) * lots * mult

@@ -285,8 +285,14 @@ class Executor:
             # новостную сделку держим минимум news_min_hold_hours: по архиву плюс набирается к суткам, а не к 4 часам;
             # стоп, безубыток и тейки работают, а защита прибыли и «застряла» ждут
             min_hold = r.get("news_min_hold_hours", 0) if t.get("news_driven") else 0
-            # защита прибыли: от пика откатились больше чем на giveback_r
-            if hours >= min_hold and mfe >= r.get("giveback_min_peak_r", 0.8) and r_now <= mfe - r.get("giveback_r", 0.6):
+            # защита прибыли: от пика откатились больше чем на giveback_r. Ступени (giveback_tiers: [[пик R, откат R], ...]):
+            # чем выше забрались, тем короче поводок (7 лет Мосбиржи: 1.5R до 3R, 1.0R с 3R, 0.6R с 5R даёт +12% к итогу,
+            # жёсткая защита 0.6R режет треть прибыли, «держать до конца» = как сейчас)
+            gb_r, gb_min = r.get("giveback_r", 0.6), r.get("giveback_min_peak_r", 0.8)
+            for pk, gb in (r.get("giveback_tiers") or []):
+                if mfe >= pk:
+                    gb_r, gb_min = gb, pk
+            if hours >= min_hold and mfe >= gb_min and r_now <= mfe - gb_r:
                 self._close_now(t, f"защита прибыли: пик был {mfe:.2f}R, сейчас {r_now:.2f}R")
                 closed.append(t)
                 continue
@@ -307,7 +313,7 @@ class Executor:
             if r_now >= r["trail_after_r"]:
                 step = int(r_now)
                 ladder = t["entry"] + (step - 1 + 0.2) * risk_dist * (1 if long else -1)
-                from_peak = t["entry"] + (mfe - r.get("giveback_r", 0.6)) * risk_dist * (1 if long else -1)
+                from_peak = t["entry"] + (mfe - gb_r) * risk_dist * (1 if long else -1)
                 new_stop = max(ladder, from_peak) if long else min(ladder, from_peak)
                 self._move_stop(t, new_stop, f"трейлинг R={r_now:.2f}, пик {mfe:.2f}R")
         return closed
