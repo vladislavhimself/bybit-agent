@@ -134,8 +134,10 @@ def close_message(t, pnl, pnl_r, reason, tradable=None, fees=None):
 
 
 def balance_message(equity, m, positions, stats, cap, llm=None, next_macro=None, xstream=None, halted_hint=True,
-                    pendings=None, why_none=None, shadow_line=None):
+                    pendings=None, why_none=None, shadow_line=None, now_lines=None):
     parts = ["💼 <b>БАЛАНС</b>"]
+    if now_lines:
+        parts.append(block("Что делаю сейчас", *[esc(x) for x in now_lines]))
     if cap:
         acct = m["tradable"] + m["reserve"] - cap
         parts.append(block("Торговый капитал", f"{money(m['tradable'])} {CUR} (лимит {money(cap)})", f"Счёт к лимиту: {signed(acct)} {CUR}"))

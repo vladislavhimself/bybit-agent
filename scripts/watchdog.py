@@ -74,7 +74,8 @@ def checks():
     # деньги на модель / ключи: по свежим строкам лога
     if log.exists():
         tail = sh(f"tail -n 400 '{log}'")
-        if re.search(r"credit balance|insufficient_quota|billing|402", tail, re.I):
+        # только настоящие ошибки оплаты API, а не любое «402» (ловилось «задержка 402с» в строке про новость)
+        if re.search(r"credit balance is too low|insufficient_quota|billing_error|Your credit balance|HTTP/?\S* 402\b.*anthropic|anthropic.*\b402\b", tail, re.I):
             problems["llm_money"] = "Anthropic отвечает ошибкой оплаты: закончились деньги на API. Новости не анализируются."
         if re.search(r"authentication_error|invalid x-api-key|401 .*anthropic", tail, re.I):
             problems["llm_key"] = "Ключ Anthropic не принимается (401). Проверь ключ."
@@ -100,19 +101,47 @@ def checks():
     return problems
 
 
+# сколько проверок подряд (раз в минуту) проблема должна держаться, прежде чем писать: перезапуск бота при обновлении
+# занимает 3 секунды, переподключение к брокеру 1–3 секунды — это не проблемы
+CONFIRM = {"bot_down": 3, "bot_stale": 2, "bridge_down": 2, "broker_off": 3, "bridge_dead": 2, "relay_off": 3, "cf_off": 3}
+TITLES = {"bot_down": "бот не запущен", "bot_stale": "бот завис", "bridge_down": "мост к ретранслятору", "broker_off": "связь с брокером Cloudflare",
+          "bridge_dead": "мост не отвечает", "relay_off": "московский ретранслятор", "cf_off": "брокер Cloudflare", "llm_money": "деньги на модели",
+          "llm_key": "ключ Anthropic", "tinvest_key": "токен T-Invest", "bybit_key": "ключ Bybit", "disk": "диск", "mem": "память",
+          "ssh_bruteforce": "подбор пароля SSH", "ssh_password_login": "вход по паролю SSH"}
+ADVICE = {"bot_down": "Зайти на сервер и запустить: systemctl restart bybit-agent. Позиции под стопами брокера.",
+          "bot_stale": "Перезапустить службу: systemctl restart bybit-agent.", "llm_money": "Пополнить баланс Anthropic.",
+          "llm_key": "Проверить ANTHROPIC_API_KEY в .env.", "tinvest_key": "Выпустить новый токен T-Invest и записать в .env.",
+          "relay_off": "Проверить московский сервер: systemctl status relay-agent.", "disk": "Почистить logs/ и старые архивы."}
+
+
 def main():
     st = json.loads(STATE.read_text()) if STATE.exists() else {}
+    cnt = st.get("_cnt", {})
     problems = checks()
     now = time.time()
+    for key in list(cnt):
+        if key not in problems:
+            cnt.pop(key)
     for key, text in problems.items():
+        cnt[key] = cnt.get(key, 0) + 1
+        if cnt[key] < CONFIRM.get(key, 1):
+            continue
         if now - st.get(key, 0) > REPEAT_SEC:
-            tg("🔧 <b>ТЕХНИЧЕСКАЯ ПРОБЛЕМА</b>\n\n<b>Что случилось</b>\n" + text.replace("<", "&lt;"), html=True)
+            parts = ["🔧 <b>ТЕХНИЧЕСКАЯ ПРОБЛЕМА</b>: " + TITLES.get(key, key),
+                     "<b>Что случилось</b>\n" + text.replace("<", "&lt;"),
+                     "<b>Проверено</b>\n" + f"{cnt[key]} раз подряд с интервалом в минуту"]
+            if ADVICE.get(key):
+                parts.append("<b>Что делать</b>\n" + ADVICE[key])
+            tg("\n\n".join(parts), html=True)
             st[key] = now
     for key in list(st):
-        if key not in problems and key != "_":
+        if key in ("_", "_cnt"):
+            continue
+        if key not in problems:
             if st[key] > 0:
-                tg("✅ <b>ИСПРАВЛЕНО</b>\n\n" + key, html=True)
+                tg("✅ <b>ИСПРАВЛЕНО</b>: " + TITLES.get(key, key) + "\n\n<b>Что было</b>\n" + key, html=True)
             st.pop(key)
+    st["_cnt"] = cnt
     STATE.write_text(json.dumps(st))
     # пульс брокеру: если сервер замолчит целиком, брокер сам напишет в Telegram
     key, ws = os.getenv("RELAY_KEY", ""), os.getenv("RELAY_WS", "")

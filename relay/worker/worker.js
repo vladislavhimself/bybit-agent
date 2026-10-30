@@ -86,14 +86,14 @@ export class Broker {
     const sent = [];
     for (const [k, text] of Object.entries(problems)) {
       if (!alerts[k] || now - alerts[k] > REPEAT_SEC * 1000) {
-        await this.telegram("🔧 ТЕХНИЧЕСКАЯ ПРОБЛЕМА (сторож Cloudflare)\n" + text);
+        await this.telegram("🔧 <b>ТЕХНИЧЕСКАЯ ПРОБЛЕМА</b>: " + (k === "head" ? "сервер с головой бота" : "московский ретранслятор") + "\n\n<b>Что случилось</b>\n" + text + "\n\n<b>Кто проверил</b>\nСторож Cloudflare, независимо от сервера");
         alerts[k] = now;
         sent.push(k);
       }
     }
     for (const k of Object.keys(alerts)) {
       if (!problems[k]) {
-        await this.telegram("✅ Исправлено (сторож Cloudflare): " + (k === "head" ? "немецкий сервер снова на связи" : "московский ретранслятор снова подключён"));
+        await this.telegram("✅ <b>ИСПРАВЛЕНО</b>: " + (k === "head" ? "сервер с головой бота" : "московский ретранслятор") + "\n\n<b>Что было</b>\n" + (k === "head" ? "немецкий сервер снова на связи" : "московский ретранслятор снова подключён"));
         delete alerts[k];
       }
     }
@@ -107,7 +107,7 @@ export class Broker {
       await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: this.env.TELEGRAM_CHAT_ID, text }),
+        body: JSON.stringify({ chat_id: this.env.TELEGRAM_CHAT_ID, text, parse_mode: "HTML" }),
       });
     } catch (e) {}
   }

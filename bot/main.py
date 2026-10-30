@@ -386,6 +386,7 @@ class Bot:
                 log.info("%s: уже есть вход в эту сторону в этом скане", sig.symbol)
                 self._shadow_from_signal(sig, ta, "one_per_scan")
                 continue
+            self._breadth_adjust(sig, symbols)
             can, why = self.risk.can_open(sig.symbol, open_trades, positions, equity, sig.direction, sig.event_key,
                                           sig.tier)
             if not can:
@@ -532,6 +533,7 @@ class Bot:
         self.tg.send(fmt.balance_message(equity, m, positions, self.j.stats(), float(self.s.get("risk.capital_cap_usd") or 0),
                                          llm, self.cal.next_high(), self.xstream.status() if self.xstream else None,
                                          pendings=self.j.pendings(),
+                                         now_lines=self._now_lines(positions),
                                          shadow_line=self.shadow.summary_text(7, top=3),
                                          why_none=fmt.funnel_text(self.funnel_since_report, self.best_weak_since_report,
                                                                   self.s.get("signals.entry_threshold"))
@@ -645,6 +647,81 @@ class Bot:
 
     # ---------- цикл ----------
     # ---------- ворота перед входом: тренд рынка, свежесть новости, режим наблюдения ----------
+    def _breadth_adjust(self, sig, symbols):
+        """Ширина рынка как размер: доля бумаг в дневном тренде в сторону сделки ≥ 50% — размер на ступень больше,
+        большинство против — на ступень меньше. 7 лет поверх ворот индекса: при согласии PF 1.60 против 1.44."""
+        if not self.s.get("signals.breadth_size"):
+            return
+        ups = dns = n = 0
+        for sym in symbols:
+            c = self.cache.get(sym)
+            if not c:
+                continue
+            td = (c[1] or {}).get("trend_d", 0)
+            n += 1
+            ups += td > 0
+            dns += td < 0
+        if n < 6:
+            return
+        b_up, b_dn = ups / n, dns / n
+        self._breadth_last = (b_up, b_dn)
+        order = ["low", "medium", "high", "conviction"]
+        i = order.index(sig.tier) if sig.tier in order else 0
+        with_us = b_up if sig.direction == "long" else b_dn
+        against = b_dn if sig.direction == "long" else b_up
+        thr = float(self.s.get("signals.breadth_threshold", 0.5))
+        if with_us >= thr and i < 2:
+            sig.tier = order[i + 1]
+            sig.reasons.append(f"ширина рынка за: {with_us * 100:.0f}% бумаг в дневном тренде в нашу сторону, размер больше")
+        elif against >= thr and i > 0:
+            sig.tier = order[i - 1]
+            sig.reasons.append(f"ширина рынка против: {against * 100:.0f}% бумаг в тренде против нас, размер меньше")
+
+    def _now_lines(self, positions):
+        out = []
+        try:
+            up = self.market_regime()
+            out.append("Рынок: " + ("индекс выше 20-дневной средней, лонги разрешены, шорты только по сильной новости" if up
+                                 else "индекс ниже 20-дневной средней, шорты разрешены, лонги только по сильной новости" if up is False
+                                 else "режим индекса не определён"))
+            b = getattr(self, "_breadth_last", None)
+            if b:
+                out.append(f"Ширина рынка: {b[0] * 100:.0f}% бумаг в дневном тренде вверх, {b[1] * 100:.0f}% вниз")
+            out.append(f"Позиций {len(positions)}, ждут отката {len(self.j.pendings())}, бумаг в скане {len(self.cache)}, новостей в очереди {self.analyze_q.qsize()}")
+            if self.exe.driver:
+                out.append("Режим наблюдения выключен: торгую всегда; параметры подбирает еженедельный перерасчёт (/wf)")
+        except Exception as e:  # noqa: BLE001
+            log.debug("now_lines: %s", e)
+        return out
+
+    def _start_block(self):
+        """Почему бот запустился, какая версия и что изменилось — чтобы каждый запуск был понятен владельцу."""
+        import signal as _signal
+        reason_p, ver_p, flag_p = DATA / "restart_reason.txt", DATA / "version.txt", DATA / "running.flag"
+        reason = reason_p.read_text(encoding="utf-8").strip() if reason_p.exists() else ""
+        if reason_p.exists():
+            reason_p.unlink()
+        if not reason:
+            reason = "перезапуск после сбоя или обрыва (прошлый процесс не завершился штатно)" if flag_p.exists() else "ручной запуск"
+        flag_p.write_text(str(int(time.time())), encoding="utf-8")
+        def _clean(*_):
+            try:
+                flag_p.unlink()
+            except OSError:
+                pass
+            raise SystemExit(0)
+        try:
+            _signal.signal(_signal.SIGTERM, _clean)
+        except (ValueError, OSError):
+            pass
+        ver = ver_p.read_text(encoding="utf-8").strip() if ver_p.exists() else ""
+        lines = [f"Причина: {fmt.esc(reason)}"]
+        if ver:
+            lines.append(f"Версия: {fmt.esc(ver)}")
+        lines.append("Что делаю: читаю новости, каждые 5 минут сканирую бумаги, веду открытые позиции, отчёт о балансе каждые "
+                     f"{self.s.get('intervals.balance_report_hours', 4)} ч")
+        return fmt.block("Запуск", *lines)
+
     def market_regime(self):
         """True = рынок растёт (индекс выше 20-дневной средней и дневной тренд вверх), False = падает, None = нет данных."""
         c = getattr(self, "_regime_cache", None)
@@ -767,10 +844,12 @@ class Bot:
         self.tg_live.start()
         x_on = self.xstream.start() if self.xstream else False
         m = self.risk.metrics(equity)
+        start_block = self._start_block()
         mode = {"demo": "demo-счёт, виртуальные деньги", "testnet": "testnet", "live": "РЕАЛЬНЫЕ ДЕНЬГИ"}[self.s.mode]
         mk = {"crypto": "крипта, Bybit", "moex": "Мосбиржа, T-Invest"}.get(self.market, self.market)
         self.tg.send("\n\n".join([
             f"🤖 <b>БОТ ЗАПУЩЕН</b>: {fmt.esc(mk)}",
+            start_block,
             fmt.block("Режим", fmt.esc(mode) + (", dry-run: сделки не открываются, только сигналы" if self.dry else "")),
             fmt.block("Капитал", f"Торговый {fmt.money(m['tradable'])} {fmt.CUR}, резерв {fmt.money(m['reserve'])}, "
                       f"весь счёт {fmt.money(equity)} {fmt.CUR}"),

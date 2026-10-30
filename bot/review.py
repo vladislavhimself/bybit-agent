@@ -101,7 +101,11 @@ class Reviewer:
         for l in rv.lessons:
             self.j.add_lesson(l)
         applied, lines = [], []
+        allow = bool(self.s.get("learning.param_changes", True))
         for ch in rv.param_changes:
+            if apply and not allow:
+                lines.append(f"предложение (параметры моделью не меняются, только перерасчётом на истории): {ch.name} -> {ch.new_value}")
+                continue
             if apply:
                 ok, msg = self.s.set_learned(ch.name, ch.new_value)
                 lines.append(("✔ " if ok else "✖ ") + msg + f" — {ch.reason}")

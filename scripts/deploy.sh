@@ -11,6 +11,8 @@ tar --exclude='.git' --exclude='data/history' --exclude='data/*.db' --exclude='d
     --exclude='__pycache__' --exclude='data/backtest_trades.csv' --exclude='.env' --exclude='.venv' \
     -czf /tmp/bybit-agent.tgz .
 scp -i "$KEY" $O /tmp/bybit-agent.tgz "$HOST:/opt/bybit-agent/"
+VER="$(git rev-parse --short HEAD 2>/dev/null) $(git log -1 --pretty=%s 2>/dev/null | cut -c1-160)"
+ssh -i "$KEY" $O "$HOST" "mkdir -p /opt/bybit-agent/data && printf '%s' \"$VER\" > /opt/bybit-agent/data/version.txt && printf 'обновление кода' > /opt/bybit-agent/data/restart_reason.txt"
 ssh -i "$KEY" $O "$HOST" 'cd /opt/bybit-agent && tar -xzf bybit-agent.tgz && rm bybit-agent.tgz \
   && .venv/bin/pip install -q -r requirements.txt && systemctl restart bybit-agent && sleep 3 \
   && systemctl --no-pager status bybit-agent | head -5'

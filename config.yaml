@@ -148,12 +148,14 @@ llm:
   daily_budget_usd: 4            # при превышении до конца суток всё переводится на дешёвую модель
   workers: 4                     # параллельных разборов новостей: в час пик очередь к модели доходила до 20 минут
   prefilter_batch: 8             # дешёвый фильтр смотрит до 8 заголовков за один вызов (расход на фильтр ÷5)
+  cheap_slow_channels: true      # Telegram-каналы вне быстрого яруса разбирает дешёвая модель
   # Второстепенные источники (пересказы, обзоры): новости из них разбирает дешёвая модель
   cheap_sources: [ambcrypto, utoday, newsbtc, beincrypto, cryptonews, cryptoslate, coinjournal, thedefiant,
                   tg:crypto_headlines, tg:incrypted, tg:ForkLog, tg:MuskTweets, tg:whalebotalerts]
 
 learning:
   enabled: true
+  param_changes: false           # модель даёт только текстовые уроки; параметры меняет лишь еженедельный перерасчёт на истории
   walkforward:                   # еженедельный перерасчёт параметров на истории с проверкой вне выборки (bot/walkforward.py)
     enabled: true
     weekday: 6                   # воскресенье
@@ -281,6 +283,8 @@ markets:
       max_extension_atr: 3.0            # 7 лет: 2 ATR -> 1192 сделки PF 1.30, 3 ATR -> 2158 сделок PF 1.31 (research/moex_more_trades.py)
       max_extension_atr_short: 99       # шорты без фильтра растяжения: 4708 сделок PF 1.30, плюс каждый год (research/moex_sizing.py)
       range_shorts: true                # 7 лет: шорты во флэте PF 1.21 (2024–2026 PF 1.4–2.2), лонги во флэте PF 0.9
+      breadth_size: true                # ширина рынка как размер: ≥50% бумаг в тренде за — ступень больше, против — меньше (research/moex_regime.py)
+      breadth_threshold: 0.5
       factor_weight: 0                  # макрофакторы пока только записываются в компоненты (проверка на тенях), в силу не входят
       factor_map:                       # сектор -> {фактор: вес}; + значит сектору хорошо, когда фактор растёт
         oil_gas: {brent: 1.0, usdrub: 0.5}

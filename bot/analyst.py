@@ -254,6 +254,10 @@ class Analyst:
         if lessons_text:
             user += f"\nУроки из прошлых сделок:\n{lessons_text}\n"
         cheap_src = set(self.s.get("llm.cheap_sources") or [])
+        if self.s.get("llm.cheap_slow_channels") and source.startswith("tg:"):
+            fast = {f"tg:{c}" for c in (self.s.get("sources.telegram_fast") or [])}
+            if source not in fast:
+                cheap_src.add(source)   # второстепенные каналы разбирает дешёвая модель: расход в 3 раза меньше
         model = self.cheap if source in cheap_src else self._main_model()
         try:
             ev = self._parse(model, SYSTEM_NEWS, user, NewsEvent, 8000, "medium")
