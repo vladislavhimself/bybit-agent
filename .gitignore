@@ -7,3 +7,5 @@ data/*.db-journal
 data/history/
 data/backtest_trades.csv
 data/learned_params.json
+relay/worker/.wrangler/
+node_modules/

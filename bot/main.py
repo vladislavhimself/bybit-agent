@@ -17,7 +17,7 @@ from logging.handlers import RotatingFileHandler
 
 from .analyst import Analyst
 from .calendar import Calendar
-from .config import LOGS, MARKET_FILE, Settings, ROOT
+from .config import LOGS, MARKET_FILE, Settings, ROOT, DATA
 from .exchange import Exchange
 from .moex import MoexExchange
 from . import article, fmt
