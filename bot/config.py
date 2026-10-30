@@ -107,10 +107,17 @@ class Settings:
     def get(self, path, default=None):
         return _get(self.cfg, path, default)
 
-    def set_learned(self, path, value, max_step=0.2):
+    # Параметры, которые подбирает еженедельный перерасчёт на истории (bot/walkforward.py): разбору моделью по пяти
+    # сделкам они закрыты — именно он опустил порог силы до 0.45 (PF 1.03 на 7 годах против 1.30 при 0.55)
+    WF_OWNED = ("signals.entry_threshold", "signals.ta_weight", "risk.stop_atr_mult", "risk.breakeven_r",
+                "signals.max_extension_atr", "risk.symbol_cooldown_hours", "signals.range_shorts", "risk.max_hours_in_trade")
+
+    def set_learned(self, path, value, max_step=0.2, source="review"):
         """Применить выученный параметр. Возвращает (ok, сообщение)."""
         if path not in TUNABLE_BOUNDS:
             return False, f"{path}: параметр не входит в список разрешённых для самообучения"
+        if source == "review" and path in self.WF_OWNED and (self.get("learning.walkforward") or {}).get("enabled"):
+            return False, f"{path}: параметр подбирается еженедельным перерасчётом на истории, разбору не доступен"
         lo, hi = TUNABLE_BOUNDS[path]
         try:
             value = float(value)

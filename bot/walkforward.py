@@ -25,6 +25,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "research"))
 
 GRID = {
+    "signals.entry_threshold": [0.50, 0.55, 0.60],   # 7 лет: 0.45 -> PF 1.03, 0.55 -> PF 1.30; модель-ревьюер опускала до 0.45
     "risk.stop_atr_mult": [2.0, 2.5],
     "risk.breakeven_r": [0.7, 1.0],
     "signals.max_extension_atr": [2.5, 3.0, 3.5],
@@ -86,7 +87,7 @@ class WalkForward:
         gates = {"ext_long": p["signals.max_extension_atr"],
                  "ext_short": self.s.get("signals.max_extension_atr_short") or p["signals.max_extension_atr"],
                  "range_short": bool(p["signals.range_shorts"]), "busy": int(p["risk.symbol_cooldown_hours"]),
-                 "thresh": float(self.s.get("signals.entry_threshold", 0.55) or 0.55)}
+                 "thresh": float(p["signals.entry_threshold"])}
         tiers = tuple(tuple(x) for x in (self.s.get("risk.giveback_tiers") or [(1.5, 1.5), (3.0, 1.0), (5.0, 0.6)]))
         exits = dict(stop_mult=p["risk.stop_atr_mult"], be_r=p["risk.breakeven_r"], max_h=int(p["risk.max_hours_in_trade"]), tiers=tiers)
         return gates, exits
@@ -139,7 +140,7 @@ class WalkForward:
         applied, msgs = [], []
         if apply and ok_oos and changes:
             for k, v in changes.items():
-                ok, msg = self.s.set_learned(k, v, max_step=None)
+                ok, msg = self.s.set_learned(k, v, max_step=None, source="walkforward")
                 msgs.append(msg)
                 if ok:
                     applied.append(k)
@@ -161,7 +162,7 @@ class WalkForward:
                 return "перерасчёт ещё не выполнялся, запусти /wf"
             rep = json.loads(self.last_path.read_text(encoding="utf-8"))
         import moex_sim as ms
-        short = {"risk.stop_atr_mult": "стоп ATR", "risk.breakeven_r": "безубыток R", "signals.max_extension_atr": "растяжение ATR",
+        short = {"signals.entry_threshold": "порог силы", "risk.stop_atr_mult": "стоп ATR", "risk.breakeven_r": "безубыток R", "signals.max_extension_atr": "растяжение ATR",
                  "risk.symbol_cooldown_hours": "пауза ч", "signals.range_shorts": "флэт-шорты", "risk.max_hours_in_trade": "макс. часов"}
         def pline(p):
             return ", ".join(f"{short.get(k, k)} {p[k]:g}" if isinstance(p[k], (int, float)) else f"{short.get(k, k)} {p[k]}" for k in GRID)
