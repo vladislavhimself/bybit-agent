@@ -31,6 +31,9 @@ TUNABLE_BOUNDS = {
     "risk.risk_per_trade_pct.high": (0.5, 2.0),
     "risk.risk_per_trade_pct.conviction": (1.0, 4.0),
     "signals.max_extension_atr": (1.5, 3.5),   # по теневым сделкам фильтра позднего входа
+    "risk.breakeven_r": (0.5, 1.5),             # еженедельный перерасчёт на истории (bot/walkforward.py)
+    "risk.symbol_cooldown_hours": (1, 24),
+    "signals.range_shorts": (0, 1),
     "entry.pullback_atr": (0.2, 0.8),          # по теневым сделкам неисполненных откатов
 }
 
@@ -104,7 +107,7 @@ class Settings:
     def get(self, path, default=None):
         return _get(self.cfg, path, default)
 
-    def set_learned(self, path, value):
+    def set_learned(self, path, value, max_step=0.2):
         """Применить выученный параметр. Возвращает (ok, сообщение)."""
         if path not in TUNABLE_BOUNDS:
             return False, f"{path}: параметр не входит в список разрешённых для самообучения"
@@ -115,8 +118,8 @@ class Settings:
             return False, f"{path}: значение {value!r} не число"
         old = self.get(path)
         # один разбор не может сдвинуть параметр больше чем на 20% от текущего значения
-        if old not in (None, 0):
-            lim = abs(float(old)) * 0.2
+        if old not in (None, 0) and max_step:
+            lim = abs(float(old)) * max_step
             value = max(float(old) - lim, min(float(old) + lim, value))
         clamped = max(lo, min(hi, value))
         if isinstance(lo, int) and isinstance(hi, int):

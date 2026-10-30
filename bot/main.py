@@ -6,7 +6,7 @@ import logging
 import os
 import itertools
 import queue
-from datetime import datetime
+from datetime import timezone, datetime
 from zoneinfo import ZoneInfo
 from collections import Counter
 import sys
@@ -39,6 +39,7 @@ from .tg_live import TelegramLive
 from .driver import DriverCheck
 from .factors import Factors
 from .divcal import DivCalendar
+from .walkforward import WalkForward
 from .signals import build_signal
 from .ta import snapshot
 from .whales import WhaleFlows, parse as parse_whale
@@ -84,6 +85,7 @@ class Bot:
         self.analyst = (Analyst(self.s, self.j, self.playbook, self.cal, self.whales, self.mood)
                         if self.s.has_anthropic else None)
         self.factors = Factors(self.s, self.ex) if hasattr(self.ex, "candles_uid") and self.s.get("signals.factor_map") else None
+        self.wf = WalkForward(self.s, self.j, self.ex, self.tg) if (self.s.get("learning.walkforward") or {}).get("enabled") else None
         self.divcal = DivCalendar(self.s, self.ex) if hasattr(self.ex, "candles_uid") and self.s.get("risk.div_block_days") else None
         self.exe.driver = (DriverCheck(self.s, self.analyst, self.j, self.ex)
                            if self.analyst and (self.s.get("risk.driver_check") or {}).get("mode") else None)
@@ -562,6 +564,14 @@ class Bot:
             elif c == "/review":
                 if self.reviewer:
                     self.reviewer.run(apply=self._auto_apply())
+            elif c == "/wf":
+                if not self.wf:
+                    self.tg.send("перерасчёт на истории выключен (learning.walkforward)")
+                elif cmd.strip().endswith("run"):
+                    self.tg.send("⏳ Перерасчёт на истории запущен, это 2–5 минут")
+                    threading.Thread(target=self.wf.run, kwargs={"apply": True, "notify": True}, daemon=True, name="wf").start()
+                else:
+                    self.tg.send(self.wf.text(), html=True)
             elif c == "/calendar":
                 parts = [fmt.block("📅 Календарь", fmt.esc(self.cal.context_text(96)))]
                 if self.divcal:
@@ -773,6 +783,13 @@ class Bot:
             now = time.time()
             try:
                 self.cal.refresh()
+                if self.wf:
+                    wc = self.s.get("learning.walkforward") or {}
+                    nowdt = datetime.now(timezone.utc)
+                    due = nowdt.weekday() == int(wc.get("weekday", 6)) and nowdt.hour == int(wc.get("hour_utc", 9))
+                    if due and now - self.last.get("walkforward", 0) >= 20 * 3600:
+                        self.last["walkforward"] = now
+                        threading.Thread(target=self.wf.run, kwargs={"apply": True, "notify": True}, daemon=True, name="wf").start()
                 if self.divcal and time.time() - self.divcal.ts > 6 * 3600:
                     threading.Thread(target=self.divcal.refresh, daemon=True, name="divcal").start()
                 self.mood.refresh()

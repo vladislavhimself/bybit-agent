@@ -194,7 +194,10 @@ def build_signal(symbol, base, ta, ticker, oi_hist, events, params, now=None, pl
     # в минус (research/live_rules). Исключение: очень свежая важная новость, движение только начинается.
     ext = sign * ta["ret_24h"] / ta["atr_pct"] if ta.get("atr_pct") else 0.0
     fresh = any(e.get("age_h", 99) * 60 <= p.get("fresh_news_minutes", 20) and e["importance"] >= 7 for e in used)
-    if ext >= p.get("max_extension_atr", 2.0) and not fresh:
+    ext_lim = p.get("max_extension_atr", 2.0)
+    if sign < 0 and p.get("max_extension_atr_short"):
+        ext_lim = p["max_extension_atr_short"]   # Мосбиржа, 7 лет: шорты без фильтра растяжения PF 1.32, сделок вдвое больше
+    if ext >= ext_lim and not fresh:
         return _no(diag, "extension", strength)
 
     t = p["entry_threshold"]
