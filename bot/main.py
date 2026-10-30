@@ -194,17 +194,35 @@ class Bot:
         return txt
 
     def news_worker(self):
+        bsize = int(self.s.get("llm.prefilter_batch", 8) or 1)
+        whale_srcs = {f"tg:{c}" for c in (self.s.get("sources.whale_channels") or [])}
         while not self.stop_flag.is_set():
             try:
-                _, _, it = self.analyze_q.get(timeout=1.0)
+                _, _, first = self.analyze_q.get(timeout=1.0)
             except queue.Empty:
                 continue
+            batch = [first]
+            while len(batch) < bsize:
+                try:
+                    batch.append(self.analyze_q.get_nowait()[2])
+                except queue.Empty:
+                    break
             try:
-                self._analyze_item(it)
+                # киты и источники без модели — по одной; остальные — один вызов фильтра на всю пачку
+                plain = [it for it in batch if it["source"] not in whale_srcs]
+                for it in batch:
+                    if it["source"] in whale_srcs:
+                        self._analyze_item(it)
+                if plain and self.analyst:
+                    keep = self.analyst.prefilter_batch(plain) if len(plain) > 1 else [None]
+                    for it, ok in zip(plain, keep):
+                        if ok is False:
+                            continue
+                        self._analyze_item(it, prefiltered=ok is True)
             except Exception as e:  # noqa: BLE001
                 log.error("Разбор новости: %s\n%s", e, traceback.format_exc())
 
-    def _analyze_item(self, it):
+    def _analyze_item(self, it, prefiltered=False):
         whale_srcs = {f"tg:{c}" for c in (self.s.get("sources.whale_channels") or [])}
         ev = None
         if True:
@@ -220,7 +238,7 @@ class Bot:
             if ev is None:
                 if not self.analyst:
                     return
-                if not self.analyst.prefilter(it["title"], it["summary"]):
+                if not prefiltered and not self.analyst.prefilter(it["title"], it["summary"]):
                     return
                 body = it["summary"]
                 if not it["source"].startswith("tg:") and it["source"] != "disclosure" and self.s.get("news.full_text", True):

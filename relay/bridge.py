@@ -23,14 +23,14 @@ send_lock = threading.Lock()
 
 
 def ws_loop(url, key):
-    backoff = 2
+    backoff = 1
     while True:
         try:
             with connect(f"{url}?role=head&key={key}", max_size=8 * 1024 * 1024, open_timeout=20,
-                         ping_interval=20, ping_timeout=20) as ws:
+                         ping_interval=15, ping_timeout=30) as ws:
                 ws_holder["ws"] = ws
                 log.info("connected to broker")
-                backoff = 2
+                backoff = 1
                 for raw in ws:
                     try:
                         msg = json.loads(raw)
@@ -45,7 +45,7 @@ def ws_loop(url, key):
             log.warning("broker connection: %s; reconnect in %ds", str(e)[:150], backoff)
         ws_holder["ws"] = None
         time.sleep(backoff)
-        backoff = min(backoff * 2, 60)
+        backoff = min(backoff * 2, 30)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -74,7 +74,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "bad json"})
         ws = ws_holder["ws"]
         if ws is None:
-            return self._json(503, {"error": "bridge not connected to broker"})
+            # связь рвётся примерно раз в час и возвращается за 1–3 с: ждём, а не отвечаем ошибкой
+            deadline = time.time() + 8
+            while ws is None and time.time() < deadline:
+                time.sleep(0.2)
+                ws = ws_holder["ws"]
+            if ws is None:
+                return self._json(503, {"error": "bridge not connected to broker"})
         rid = uuid.uuid4().hex
         req["id"] = rid
         slot = {"event": threading.Event(), "result": None}
@@ -86,6 +92,16 @@ class Handler(BaseHTTPRequestHandler):
             if not slot["event"].wait(float(req.get("timeout") or 30) + 15):
                 return self._json(504, {"error": "relay timeout"})
             res = slot["result"]
+            if res.get("error") == "relay not connected":
+                # ретранслятор переподключается: одна повторная попытка через 3 с
+                time.sleep(3)
+                slot["event"].clear()
+                ws = ws_holder["ws"]
+                if ws is not None:
+                    with send_lock:
+                        ws.send(json.dumps(req))
+                    if slot["event"].wait(float(req.get("timeout") or 30) + 15):
+                        res = slot["result"]
             if res.get("error"):
                 return self._json(502, {"error": res["error"]})
             if res.get("gz"):

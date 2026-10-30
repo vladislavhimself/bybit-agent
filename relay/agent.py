@@ -137,12 +137,12 @@ def main():
     url = os.environ["RELAY_WS"].rstrip("/")
     key = os.environ["RELAY_KEY"]
     host = urlsplit(url).hostname
-    backoff = 2
+    backoff = 1
     while True:
         try:
             sock = open_socket(host)
             with connect(f"{url}?role=relay&key={key}", sock=sock, server_hostname=host, max_size=8 * 1024 * 1024,
-                         open_timeout=20, ping_interval=20, ping_timeout=20) as ws:
+                         open_timeout=20, ping_interval=15, ping_timeout=30) as ws:
                 log.info("connected to broker")
                 backoff = 2
                 for raw in ws:
@@ -151,7 +151,7 @@ def main():
             log.warning("broker connection: %s; reconnect in %ds", str(e)[:150], backoff)
             LAST_GOOD["ip"] = ""
             time.sleep(backoff)
-            backoff = min(backoff * 2, 60)
+            backoff = min(backoff * 2, 30)
 
 
 if __name__ == "__main__":

@@ -39,6 +39,7 @@ export class Broker {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     this.state.acceptWebSocket(server, [role]);
+    try { this.state.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong")); } catch (e) {}
     if (role === "relay") await this.state.storage.put("relay_seen", Date.now());
     return new Response(null, { status: 101, webSocket: client });
   }

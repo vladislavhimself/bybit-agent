@@ -45,6 +45,10 @@ class Prefilter(BaseModel):
     market_relevant: bool
 
 
+class PrefilterBatch(BaseModel):
+    relevant_ids: list[int]   # номера новостей из списка, которые могут двинуть цену
+
+
 class SetupVerdict(BaseModel):
     agree: bool
     direction: Literal["long", "short", "none"]
@@ -195,13 +199,45 @@ class Analyst:
                 parts.append(c)
         return "\n\n".join(parts)
 
+    def _relevance_rule(self):
+        if self.s.get("market") == "moex":
+            return ("новость может повлиять на цену акций или фьючерсов Московской биржи в ближайшие двое суток: "
+                    "ставка и заявления ЦБ, инфляция, бюджет, санкции и их снятие, переговоры и геополитика, нефть и газ, "
+                    "курс рубля, отчёты и дивиденды компаний, сделки M&A, допэмиссии, выкупы, решения судов и регуляторов, "
+                    "аварии. Реклама, интервью без фактов, мнения, обзоры «что было за день», подборки и дайджесты, "
+                    "спорт, происшествия без экономики = не относится.")
+        return ("новость может повлиять на цену какой-либо криптовалюты в ближайшие двое суток (взломы, регуляторика, "
+                "листинги/делистинги, макро, крупные сделки и переводы, ETF, разблокировки, сбои, банкротства). "
+                "Реклама, интервью, мнения, обзоры, конкурсы биржи, рекламные акции = не относится.")
+
+    def prefilter_batch(self, items):
+        """Один вызов дешёвой модели на пачку новостей: список номеров тех, что могут двинуть цену.
+        При ошибке пропускаем все к основной модели (как и одиночный фильтр)."""
+        if not items:
+            return []
+        if len(items) == 1:
+            return [self.prefilter(items[0]["title"], items[0].get("summary") or "")]
+        lines = []
+        for i, it in enumerate(items, 1):
+            body = " ".join((it.get("summary") or "").split())[:300]
+            lines.append(f"{i}. {it['title'][:200]}" + (f" — {body}" if body and body[:60] != it['title'][:60] else ""))
+        user = ("Новости:\n" + "\n".join(lines) + "\n\nВерни номера новостей, для которых верно: " + self._relevance_rule()
+                + " Если таких нет — пустой список.")
+        try:
+            r = self._parse(self.cheap, "Ты фильтр новостей для торгового бота. Отвечай строго по схеме.", user,
+                            PrefilterBatch, 2000, "low")
+            if r is None:
+                return [True] * len(items)
+            keep = {int(x) for x in r.relevant_ids}
+            return [(i + 1) in keep for i in range(len(items))]
+        except Exception as e:  # noqa: BLE001
+            log.warning("prefilter_batch: %s", str(e)[:200])
+            return [True] * len(items)
+
     def prefilter(self, title, summary):
         """Дешёвый фильтр: имеет ли новость отношение к движению цен."""
         user = (f"Заголовок: {title}\nТекст: {summary[:600]}\n\n"
-                "market_relevant = true, если новость может повлиять на цену какой-либо криптовалюты в ближайшие "
-                "двое суток (взломы, регуляторика, листинги/делистинги, макро, крупные сделки и переводы, ETF, "
-                "разблокировки, сбои, банкротства). Реклама, интервью, мнения, обзоры, конкурсы биржи, "
-                "рекламные акции = false.")
+                "market_relevant = true, если " + self._relevance_rule())
         try:
             r = self._parse(self.cheap, "Ты фильтр новостей для торгового бота. Отвечай строго по схеме.", user,
                             Prefilter, 2000, "low")
