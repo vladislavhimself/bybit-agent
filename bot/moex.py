@@ -384,6 +384,13 @@ class MoexExchange:
         return {"imbalance": (buy - sell) / tot if tot else 0.0, "big_rub": tot, "n_big": int(n_big),
                 "big_share": None}
 
+    def price_limits(self, symbol):
+        """Границы ценового коридора на сегодня (limitDown, limitUp) или None: заявка вне коридора биржа отклоняет."""
+        it = self.instruments()[symbol]
+        ob = self.call("MarketDataService", "GetOrderBook", {"instrumentId": it["uid"], "depth": 1})
+        lo, hi = q2f(ob.get("limitDown")), q2f(ob.get("limitUp"))
+        return (lo, hi) if lo and hi and hi > lo else None
+
     def book_imbalance(self, symbol, depth=20):
         it = self.instruments()[symbol]
         try:

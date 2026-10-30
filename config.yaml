@@ -162,7 +162,7 @@ markets:
     shadow:
       paper_mode: true                  # тени за paper_mode_days в минусе -> только наблюдение, без сделок
       paper_mode_days: 3
-      paper_mode_min_n: 20
+      paper_mode_min_n: 12              # судим по теням, которые бот взял бы, и реальным сделкам (не по теням ворот)
       paper_mode_below_r: -0.02
     currency: RUB
     universe:

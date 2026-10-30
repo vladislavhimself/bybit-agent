@@ -676,7 +676,13 @@ class Bot:
         now = now or time.time()
         since = max(int(now - c.get("paper_mode_days", 3) * 86400), int(self.j.kv_get("paper_mode_since", 0) or 0))
         rows = self.j.shadows_resolved(since)   # только тени, записанные после включения ворот: старую систему не судим
-        vals = [r["r_pullback"] if r["r_pullback"] is not None else r["r_market"] for r in rows]
+        # Судим систему по тому, что она взяла бы: тени, отсечённые ТОЛЬКО режимом наблюдения или лимитами слотов,
+        # плюс реальные сделки. Тени ворот (флэт, растяжение, слабый сигнал, старая новость) ДОЛЖНЫ быть в минусе —
+        # это работа фильтров, а не провал системы; раньше они и загоняли бота в вечное наблюдение.
+        would = [r for r in rows if r["reason"] == "paper_mode" or r["reason"].startswith("limit_")
+                 or r["reason"] in ("one_per_scan", "pullback_not_filled")]
+        vals = [r["r_pullback"] if r["r_pullback"] is not None else r["r_market"] for r in would]
+        vals += [t["pnl_r"] for t in self.j.closed_trades(200) if (t["closed_ts"] or 0) >= since and t["pnl_r"] is not None]
         vals = [v for v in vals if v is not None]
         if len(vals) < c.get("paper_mode_min_n", 20):
             return

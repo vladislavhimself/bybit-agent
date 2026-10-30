@@ -158,7 +158,21 @@ class Executor:
             log.warning("%s: не удалось поставить стоп: %s", sig.symbol, ex)
         plan = self._tp_plan(sig.symbol, qty, entry, dist, long)
         close_side = "Sell" if long else "Buy"
+        limits = None
+        if hasattr(self.ex, "price_limits"):
+            try:
+                limits = self.ex.price_limits(sig.symbol)
+            except Exception:  # noqa: BLE001
+                limits = None
         for lvl in plan:
+            if limits:
+                # тейк за пределами дневного коридора (ЛСР: ATR 3.6%, тейк +11%) биржа не принимает — ставим у границы
+                lo, hi = limits
+                tick = float(self.ex.instruments()[sig.symbol]["tick"])
+                clamped = min(lvl["price"], hi - tick) if long else max(lvl["price"], lo + tick)
+                if clamped != lvl["price"]:
+                    log.info("%s: тейк %.2fR %g вне коридора %g–%g, ставлю %g", sig.symbol, lvl["r"], lvl["price"], lo, hi, clamped)
+                    lvl["price"] = clamped
             try:
                 lvl["order_id"] = self.ex.place_limit(sig.symbol, close_side, lvl["qty"], lvl["price"])
             except Exception as ex:  # noqa: BLE001
@@ -376,7 +390,11 @@ class Executor:
             self.ex.close_position(t["symbol"])
             time.sleep(2)
         except Exception as e:  # noqa: BLE001
-            log.error("%s: ошибка закрытия: %s", t["symbol"], e)
+            if "30079" in str(e) or "not available for trading" in str(e):
+                # биржа закрыта для этой бумаги (ночь, выходной): закроем при открытии, стоп-заявка у брокера стоит
+                log.warning("%s: биржа закрыта, закрою при открытии сессии (%s)", t["symbol"], reason[:60])
+            else:
+                log.error("%s: ошибка закрытия: %s", t["symbol"], e)
             return
         self._finalize(t, reason)
 
