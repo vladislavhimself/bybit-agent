@@ -171,6 +171,26 @@ class RiskManager:
             if n_sec >= r["max_per_sector"]:
                 self.last_reject = "sector"
                 return False, f"в секторе {sec} уже {n_sec} позиции (лимит {r['max_per_sector']})"
+        if direction:
+            side = "Buy" if direction == "long" else "Sell"
+            base_now = self.base_of(symbol)
+            recent = [x for x in self.j.closed_trades(60) if self.base_of(x["symbol"]) == base_now and x["side"] == side]
+            # после закрытия по контр-новости в ту же сторону не входим news_exit_cooldown_hours
+            ncd = r.get("news_exit_cooldown_hours", 0)
+            if ncd:
+                last_news = max((x["closed_ts"] or 0 for x in recent if (x.get("close_reason") or "").startswith("контр-новость")), default=0)
+                if last_news and time.time() - last_news < ncd * 3600:
+                    self.last_reject = "news_exit_cooldown"
+                    return False, f"по {base_now} позиция закрыта контр-новостью меньше {ncd} ч назад: в ту же сторону не входим"
+            # не больше max_entries_per_day входов в сутки по одной компании в одну сторону
+            mpd = int(r.get("max_entries_per_day", 0) or 0)
+            if mpd:
+                day_ago = time.time() - 86400
+                n_day = sum(1 for x in recent if (x.get("opened_ts") or 0) >= day_ago)
+                n_day += sum(1 for x in open_trades if self.base_of(x["symbol"]) == base_now and x["side"] == side and (x.get("opened_ts") or time.time()) >= day_ago)
+                if n_day >= mpd:
+                    self.last_reject = "daily_entries"
+                    return False, f"по {base_now} уже {n_day} входа в эту сторону за сутки (лимит {mpd})"
         cd = r.get("symbol_cooldown_hours", 0)
         if cd and direction:
             last = self.j.last_entry_ts(symbol, "Buy" if direction == "long" else "Sell")

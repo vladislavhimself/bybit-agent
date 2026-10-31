@@ -98,7 +98,7 @@ def features(df):
 
 
 DEFAULT_GATES = {"thresh": 0.55, "ext_long": 3.0, "ext_short": 3.0, "range_long": False, "range_short": True,
-                 "high_vol": False, "counter_4h": False, "busy": 3}
+                 "high_vol": False, "counter_4h": False, "busy": 3, "max_per_day": 0}
 DEFAULT_EXITS = dict(stop_mult=2.0, tps=((1.5, 0.25), (2.5, 0.35)), be_r=0.7, tiers=((1.5, 1.5), (3.0, 1.0), (5.0, 0.6)),
                      stall_h=12, trail_after=1.0, max_h=96)
 
@@ -199,10 +199,15 @@ def run(feats, gates=None, **exit_kw):
         r24, ap = f.ret24.values, f.atr_pct.values
         idx = f.index
         busy = -1
+        day_cnt = {}
         for i in range(len(f) - 6):
             if i <= busy or abs(0.6 * sc[i]) < G["thresh"]:
                 continue
             sg = 1 if sc[i] > 0 else -1
+            if G["max_per_day"]:
+                dk = (idx[i].normalize(), sg)
+                if day_cnt.get(dk, 0) >= G["max_per_day"]:
+                    continue
             if rg[i] == "range" and not (G["range_long"] if sg > 0 else G["range_short"]):
                 continue
             if rg[i] == "high_vol" and not G["high_vol"]:
@@ -220,6 +225,8 @@ def run(feats, gates=None, **exit_kw):
             t = idx[i]
             t_exit = idx[min(out[2] - 1, len(idx) - 1)]
             res.append((t, sym, sg, out[0], t_exit))
+            if G["max_per_day"]:
+                day_cnt[dk] = day_cnt.get(dk, 0) + 1
             busy = out[1] + G["busy"]
     return pd.DataFrame(res, columns=["t", "sym", "sg", "r", "t_exit"])
 

@@ -366,20 +366,34 @@ class Executor:
                 if (e["direction"] == "bearish" and long) or (e["direction"] == "bullish" and not long):
                     self.cancel_pendings("контр-новость", symbols={p["symbol"]})
                     break
+        sectors = r.get("sectors") or {}
+        max_names = int(r.get("news_exit_max_names", 4))
         for t in self.j.open_trades():
             base = inst.get(t["symbol"], {}).get("base", "")
             long = t["side"] == "Buy"
+            sec = next((k for k, v in sectors.items() if base in v), None)
             for e in events:
                 if e["importance"] < min_imp or e["confidence"] < 0.6:
                     continue
-                direct = base in e["affected"]
-                wide = e["market_wide"] and e["importance"] >= 8
-                if not (direct or wide):
-                    continue
                 contra = (e["direction"] == "bearish" and long) or (e["direction"] == "bullish" and not long)
-                if contra:
+                if not contra:
+                    continue
+                aff = e.get("affected") or []
+                # геополитический заголовок с девятью тикерами — общерыночный шум, по архиву он цену не предсказывает:
+                # 31.10 две такие «контр-новости» закрыли технический лонг Газпрома в минус, и бот тут же вошёл снова
+                wide = bool(e.get("market_wide")) or len(aff) > max_names
+                specific = (not wide) and base in aff
+                sector_hit = (not wide) and sec and sum(1 for a in aff if a in sectors[sec]) >= 2
+                if specific or sector_hit:
                     self._close_now(t, f"контр-новость [{e['event_type']}, imp {e['importance']}]: {e['title'][:60]}")
                     closed.append(t)
+                    break
+                if wide and e["importance"] >= 8 and r.get("news_wide_tighten", True):
+                    # общерыночная и важная: не выходим, а режем риск вдвое — стоп на полпути к входу
+                    risk_dist = abs(t["entry"] - t["stop_init"])
+                    if risk_dist > 0:
+                        new_stop = t["entry"] - 0.5 * risk_dist if long else t["entry"] + 0.5 * risk_dist
+                        self._move_stop(t, new_stop, f"общерыночная контр-новость imp {e['importance']}: стоп ближе")
                     break
         return closed
 
