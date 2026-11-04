@@ -688,6 +688,11 @@ class Bot:
             if b:
                 out.append(f"Ширина рынка: {b[0] * 100:.0f}% бумаг в дневном тренде вверх, {b[1] * 100:.0f}% вниз")
             out.append(f"Позиций {len(positions)}, ждут отката {len(self.j.pendings())}, бумаг в скане {len(self.cache)}, новостей в очереди {self.analyze_q.qsize()}")
+            if self.analyst:
+                c = self.analyst.cost.today()
+                tier = {"normal": "обычный", "economy": "экономный", "minimal": "минимальный"}[self.analyst.spend_tier()]
+                out.append(f"Модель: сегодня {c['usd']:.2f} $ ({c['calls']} вызовов), режим {tier}; за месяц {self.analyst.cost.month():.2f} $"
+                           + (f" из {float(self.s.get('llm.monthly_budget_usd')):.0f}" if self.s.get("llm.monthly_budget_usd") else ""))
             if self.exe.driver:
                 out.append("Режим наблюдения выключен: торгую всегда; параметры подбирает еженедельный перерасчёт (/wf)")
         except Exception as e:  # noqa: BLE001
@@ -874,6 +879,15 @@ class Bot:
                 self.mood.refresh()
                 if self.expect and self.expect.due(now):
                     self.expect.refresh(now)
+                if self.analyst and now - self.last.get("llm_month_check", 0) >= 3600:
+                    self.last["llm_month_check"] = now
+                    cap = float(self.s.get("llm.monthly_budget_usd") or 0)
+                    spent = self.analyst.cost.month()
+                    if cap and spent >= 0.8 * cap and self.j.kv_get("llm_month_warned") != datetime.now(timezone.utc).strftime("%Y-%m-%d"):
+                        self.j.kv_set("llm_month_warned", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+                        self.tg.send("\n\n".join(["💸 <b>РАСХОД НА МОДЕЛЬ</b>",
+                                                   fmt.block("За месяц", f"{spent:.2f} $ из {cap:.0f} $ ({spent / cap * 100:.0f}%)"),
+                                                   fmt.block("Что делаю", "Перехожу в экономный режим до конца месяца: сильная модель только для быстрых каналов и раскрытия")]), html=True)
                 if now - self.last.get("paper_check", 0) >= 1800:
                     self.last["paper_check"] = now
                     try:

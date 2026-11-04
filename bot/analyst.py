@@ -57,6 +57,30 @@ class SetupVerdict(BaseModel):
     reasoning: str
 
 
+SYSTEM_NEWS_MOEX = """Ты аналитик российского фондового рынка внутри автономного торгового бота на Московской бирже
+(акции и фьючерсы в рублях, сделки на часы и дни). Задача: разобрать новость и оценить её торговое значение. Будь скептичен:
+- большинство новостей не двигают рынок; importance >= 7 только для событий уровня решения ЦБ по ставке или резкой смены
+  его риторики, крупных санкций или их снятия, реального прогресса или срыва переговоров, отчёта или дивидендов компании
+  с сильным расхождением с ожиданиями, сделки M&A, допэмиссии, выкупа, решения суда или регулятора по конкретной компании,
+  аварии на производстве, резкого хода нефти или рубля;
+- если новость пересказывает уже известное или ожидаемое событие, ставь already_priced = true;
+- если это слух, скриншот, неподтверждённое сообщение или источник ненадёжен, ставь is_rumor = true и снижай confidence;
+- affected_symbols: только тикеры Мосбиржи (SBER, GAZP, LKOH, ROSN, NVTK, GMKN, YDEX, TATN, VTBR, MGNT, PLZL, CHMF, NLMK,
+  MTSS, ALRS, MOEX, OZON, T, AFLT, SNGS, X5, RUAL, PIKK, SMLT, NMTP, FLOT, IRAO, FEES, HYDR, UPRO, PHOR и другие),
+  которые реально затронуты, не больше четырёх. Не выдумывай тикеры и не перечисляй весь сектор ради полноты;
+- market_wide = true для событий на весь рынок: ставка и риторика ЦБ, инфляция, бюджет, санкции против страны, геополитика,
+  курс рубля, нефть. Такие новости не называй по бумагам, ставь флаг;
+- типы: решение ЦБ, инфляция, бюджет, нефть, рубль = macro; санкции, переговоры, законы, решения регуляторов = regulation;
+  отчёты, дивиденды, прогнозы менеджмента = earnings; сделки и партнёрства = partnership; суд = legal; авария = outage;
+  крупные сделки на бирже = whale; остальное = other;
+- horizon_hours: 2-6 для импульсных событий, 12-48 для фундаментальных;
+- учитывай историческую статистику реакции на такие типы событий, если она передана, но помни, что это медианы
+  и каждый случай отличается;
+- expected / surprise: если в тексте или контексте есть ожидания (консенсус, прогноз, «ожидали»), сравни факт с ними:
+  surprise от -1 (намного хуже ожиданий) до +1 (намного лучше), 0 если совпало или ожиданий нет. Сами ожидания — НЕ причина
+  для входа, причина — расхождение факта с ними.
+Отвечай строго по схеме, reasoning — одна-две фразы по делу."""
+
 SYSTEM_NEWS = """Ты аналитик крипторынка внутри автономного торгового бота на бирже Bybit (USDT-перпетуалы, сделки на часы).
 Задача: разобрать новость и оценить её торговое значение. Будь скептичен:
 - большинство новостей не двигают рынок; importance >= 7 только для событий уровня взлома крупной биржи/протокола,
@@ -128,6 +152,20 @@ class CostTracker:
     def today(self):
         return self.j.kv_get(self._key(), {"usd": 0.0, "calls": 0})
 
+    def month(self):
+        """Расход за календарный месяц (UTC) по всем суточным записям."""
+        pref = "llm_cost_" + datetime.now(timezone.utc).strftime("%Y-%m")
+        total = 0.0
+        try:
+            for r in self.j._run("SELECT k, v FROM kv WHERE k LIKE ?", (pref + "%",), "all"):
+                try:
+                    total += float(json.loads(r["v"]).get("usd", 0))
+                except (ValueError, TypeError, AttributeError):
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
+        return round(total, 2)
+
 
 class Analyst:
     def __init__(self, settings, journal, playbook=None, calendar=None, whales=None, mood=None):
@@ -140,6 +178,20 @@ class Analyst:
         self.market_notes = settings.get("llm.market_notes") or ""
         self.cost = CostTracker(journal)
         self._budget_warned = False
+
+    def spend_tier(self):
+        """obычный / экономный / минимальный по расходу за сутки: не выключаем, а тратим меньше."""
+        usd = self.cost.today()["usd"]
+        soft = float(self.s.get("llm.budget_soft_usd") or self.budget or 0)
+        hard = float(self.s.get("llm.budget_hard_usd") or 0)
+        if hard and usd >= hard:
+            return "minimal"
+        if soft and usd >= soft:
+            return "economy"
+        mcap = float(self.s.get("llm.monthly_budget_usd") or 0)
+        if mcap and self.cost.month() >= 0.8 * mcap:
+            return "economy"
+        return "normal"
 
     def _main_model(self):
         """Основная модель, пока укладываемся в дневной бюджет, иначе дешёвая."""
@@ -155,11 +207,13 @@ class Analyst:
         return bool(self.budget) and self.cost.today()["usd"] >= self.budget
 
     def _parse(self, model, system, user, schema, max_tokens=8000, effort="medium"):
+        blocks = system if isinstance(system, (list, tuple)) else [system]
+        system_blocks = [{"type": "text", "text": b, "cache_control": {"type": "ephemeral"}} for b in blocks if b]
         # Модель сначала думает, потом отвечает: на мышление уходят токены из того же лимита,
         # поэтому лимит с запасом, а глубину мышления задаёт effort.
         resp = self.client.messages.parse(
             model=model, max_tokens=max_tokens, output_config={"effort": effort},
-            system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+            system=system_blocks,
             messages=[{"role": "user", "content": user}], output_format=schema,
         )
         self.cost.add(model, getattr(resp, "usage", None))
@@ -247,20 +301,36 @@ class Analyst:
             return True
 
     def classify(self, title, summary, source, lessons_text=""):
-        user = f"Источник: {source}\nЗаголовок: {title}\nТекст: {summary}\n"
+        tier = self.spend_tier()
+        # Текст новости — короткий, в сообщении пользователя. Всё повторяющееся (заметки о рынке, контекст, уроки) —
+        # отдельным системным блоком с кешем: оплачивается полностью раз в несколько минут, дальше по 10% цены.
+        # Раньше контекст (3-6 тыс. символов) шёл в каждом вызове без кеша — это и было $6 в день
+        max_chars = int(self.s.get("llm.article_max_chars_economy", 1200) if tier != "normal" else self.s.get("llm.article_max_chars", 2500))
+        user = f"Источник: {source}\nЗаголовок: {title}\nТекст: {(summary or '')[:max_chars]}\n"
+        ctx_parts = []
+        if self.market_notes:
+            ctx_parts.append(self.market_notes)
         ctx = self._context()
         if ctx:
-            user += f"\n{ctx}\n"
+            ctx_parts.append(ctx)
         if lessons_text:
-            user += f"\nУроки из прошлых сделок:\n{lessons_text}\n"
+            ctx_parts.append("Уроки из прошлых сделок:\n" + lessons_text)
+        system = [SYSTEM_NEWS_MOEX if self.s.get("market") == "moex" else SYSTEM_NEWS, "Контекст рынка:\n\n" + "\n\n".join(ctx_parts)]
+        fast = {f"tg:{c}" for c in (self.s.get("sources.telegram_fast") or [])} | {"disclosure"}
+        fast_rss = set(self.s.get("sources.rss_fast") or [])
         cheap_src = set(self.s.get("llm.cheap_sources") or [])
-        if self.s.get("llm.cheap_slow_channels") and source.startswith("tg:"):
-            fast = {f"tg:{c}" for c in (self.s.get("sources.telegram_fast") or [])}
-            if source not in fast:
-                cheap_src.add(source)   # второстепенные каналы разбирает дешёвая модель: расход в 3 раза меньше
-        model = self.cheap if source in cheap_src else self._main_model()
+        if tier == "minimal":
+            model = self.cheap                                   # всё дешёвой, но разбор не останавливается
+        elif tier == "economy":
+            model = self.model if source in fast else self.cheap  # сильная только для быстрых каналов и раскрытия
+        else:
+            # обычный: сильная для быстрых каналов, раскрытия, лент агентств и прочих RSS; дешёвая для медленных
+            # Telegram-каналов и второстепенных источников из cheap_sources
+            slow_tg = source.startswith("tg:") and source not in fast
+            model = self.cheap if (slow_tg or source in cheap_src) else self.model
+        effort = "low" if model == self.cheap else "medium"
         try:
-            ev = self._parse(model, SYSTEM_NEWS, user, NewsEvent, 8000, "medium")
+            ev = self._parse(model, system, user, NewsEvent, 8000, effort)
         except anthropic.RateLimitError as e:
             log.warning("classify rate limit: %s", e)
             time.sleep(5)
