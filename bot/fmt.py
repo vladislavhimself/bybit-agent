@@ -170,7 +170,7 @@ def balance_message(equity, m, positions, stats, cap, llm=None, next_macro=None,
         parts.append(block("Сделки", f"{stats['n']}: прибыльных {stats['win_rate']}%, средний результат {stats['avg_r']}R",
                            f"Итог {signed(stats['pnl'])} {CUR} с учётом комиссий ({money(stats.get('fees', 0), 2)} {CUR})"))
     if llm:
-        lines = [f"Сегодня: {llm['usd']:.2f} $ ({llm['calls']} вызовов)", ""]
+        lines = [f"Сегодня: {llm['usd']:.2f} $ ({llm['calls']} вызовов)", "⁣"]   # пустая строка между «сегодня» и «за месяц»
         if llm.get("month") is not None:
             lines.append(f"За месяц: {llm['month']:.2f} $" + (f" из {llm['cap']:.0f} $" if llm.get("cap") else ""))
         if llm.get("total") is not None:
