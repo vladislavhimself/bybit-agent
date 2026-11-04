@@ -1,5 +1,6 @@
 """Исполнение: вход со стопом и частичными тейками, перенос в безубыток, трейлинг остатка, тайм-стоп,
 закрытие по контр-новости, фиксация результата."""
+import json
 import logging
 import time
 from decimal import Decimal
@@ -224,9 +225,27 @@ class Executor:
                 self.tg.send(fmt.block("⌛ Ордер снят", f"{fmt.esc(fmt.label(p['symbol']))}: откат к {p['price']:g} не случился, сделки нет"), html=True)
 
     def cancel_pendings(self, reason, symbols=None):
+        """Снять отложенные ордера. Перед отменой спрашиваем брокера: если ордер уже исполнился (03.11 Яндекс: лимитка
+        исполнилась за 2 минуты до отмены по контр-новости), оформляем сделку, иначе позиция осталась бы без присмотра."""
         n = 0
         for p in self.j.pendings():
             if symbols is not None and p["symbol"] not in symbols:
+                continue
+            st = self.ex.order_status(p["symbol"], p["order_id"]) or {}
+            filled = float(st.get("filled") or 0)
+            if st.get("status") == "Filled" or filled > 0:
+                if st.get("status") != "Filled":
+                    self.ex.cancel_order(p["symbol"], p["order_id"])
+                self.j.remove_pending(p["id"])
+                pay = p["payload"]
+                sig = self._sig_from_payload(p["symbol"], pay)
+                try:
+                    equity = self.ex.balances()["equity"]
+                except Exception:  # noqa: BLE001
+                    equity = 0.0
+                log.warning("%s: отложенный ордер исполнился до отмены (%s): оформляю сделку", p["symbol"], reason)
+                self._finish_entry(sig, pay["atr"], pay["dist"], pay["lev"], p["order_id"], equity,
+                                   st.get("avg") or p["price"], filled or p["qty"])
                 continue
             self.ex.cancel_order(p["symbol"], p["order_id"])
             self.j.remove_pending(p["id"])
@@ -453,8 +472,54 @@ class Executor:
             tradable = None
         self.tg.send(fmt.close_message(t, pnl, pnl_r, reason, tradable, fees), html=True)
 
+    def adopt_orphans(self):
+        """Позиция у брокера без записи в журнале (сбой, гонка ордера и отмены, ручная сделка) берётся под управление:
+        запись в журнал, стоп 2 ATR у брокера, сообщение владельцу. Иначе она висит без стопа и сопровождения."""
+        try:
+            positions = self.ex.positions()
+        except Exception:  # noqa: BLE001
+            return []
+        known = {t["symbol"] for t in self.j.open_trades()} | {p["symbol"] for p in self.j.pendings()}
+        now = time.time()
+        just_closed = {t["symbol"] for t in self.j.closed_trades(30) if (t.get("closed_ts") or 0) > now - 600}
+        adopted = []
+        for p in positions:
+            sym = p["symbol"]
+            if sym in known or sym in just_closed or abs(p.get("qty") or 0) <= 0:
+                continue
+            try:
+                from . import ta as _ta
+                d = self.ex.klines(sym, "60", 120)
+                atr = float(_ta.atr(d).iloc[-1])
+                inst = self.ex.instruments()[sym]
+                long = p["side"] == "Buy"
+                dist = float(self.s.get("risk.stop_atr_mult", 2.0)) * atr
+                entry = float(p["entry"])
+                stop = entry - dist if long else entry + dist
+                tid = self.j.open_trade({"symbol": sym, "side": p["side"], "qty": float(p["qty"]), "entry": entry, "stop": stop, "tp": 0.0,
+                                         "stop_init": stop, "tier": "low", "score": 0.0, "confidence": 0.0,
+                                         "reasons": json.dumps(["позиция у брокера без записи в журнале: взята под управление при сверке"], ensure_ascii=False),
+                                         "regime": "", "atr": atr, "leverage": 1.0, "opened_ts": int(now), "status": "open", "order_id": "",
+                                         "news_driven": 0, "qty_init": float(p["qty"]), "tp_plan": "[]", "tp_hits": 0, "event_key": "",
+                                         "mult": float(inst["mult"]), "fees": 0.0})
+                try:
+                    self.ex.set_stop_loss(sym, stop)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("%s: стоп для подхваченной позиции не выставлен: %s", sym, e)
+                adopted.append(sym)
+                log.warning("%s: позиция без записи взята под управление (id %s), стоп %g", sym, tid, stop)
+                self.tg.send("\n\n".join([
+                    f"🧷 <b>ПОЗИЦИЯ ВЗЯТА ПОД УПРАВЛЕНИЕ</b>: {fmt.esc(fmt.label(sym))} {'ЛОНГ' if long else 'ШОРТ'}",
+                    fmt.block("Что случилось", "У брокера есть позиция, а в журнале бота записи не было (сбой или гонка ордера и отмены)"),
+                    fmt.block("Что сделал", f"Записал сделку: {p['qty']:g} @ {entry:g}, стоп {stop:g} (2 ATR), веду как обычную"),
+                ]), html=True)
+            except Exception as e:  # noqa: BLE001
+                log.error("%s: не удалось взять позицию под управление: %s", sym, e)
+        return adopted
+
     def reconcile(self):
-        """Дозаполнить результат сделок, по которым биржа не ответила при закрытии."""
+        """Дозаполнить результат сделок, по которым биржа не ответила при закрытии; подхватить позиции без записи."""
+        self.adopt_orphans()
         for t in self.j.unreconciled(48):
             res = self._exchange_result(t)
             if res is not None:
