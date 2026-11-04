@@ -534,7 +534,9 @@ class Bot:
         llm = None
         if self.analyst:
             c = self.analyst.cost.today()
-            llm = {"calls": c["calls"], "usd": c["usd"], "budget": self.analyst.budget}
+            extra = float(sum((self.s.get("llm.extra_spend_usd") or {}).values()) if isinstance(self.s.get("llm.extra_spend_usd"), dict) else 0)
+            llm = {"calls": c["calls"], "usd": c["usd"], "budget": self.analyst.budget, "month": self.analyst.cost.month(),
+                   "cap": float(self.s.get("llm.monthly_budget_usd") or 0), "total": self.analyst.cost.total() + extra, "extra": extra}
         self.tg.send(fmt.balance_message(equity, m, positions, self.j.stats(), float(self.s.get("risk.capital_cap_usd") or 0),
                                          llm, self.cal.next_high(), self.xstream.status() if self.xstream else None,
                                          pendings=self.j.pendings(),
@@ -713,17 +715,6 @@ class Bot:
             out.append("Рынок: " + ("индекс выше 20-дневной средней, лонги разрешены, шорты только по сильной новости" if up
                                  else "индекс ниже 20-дневной средней, шорты разрешены, лонги только по сильной новости" if up is False
                                  else "режим индекса не определён"))
-            b = getattr(self, "_breadth_last", None)
-            if b:
-                out.append(f"Ширина рынка: {b[0] * 100:.0f}% бумаг в дневном тренде вверх, {b[1] * 100:.0f}% вниз")
-            out.append(f"Позиций {len(positions)}, ждут отката {len(self.j.pendings())}, бумаг в скане {len(self.cache)}, новостей в очереди {self.analyze_q.qsize()}")
-            if self.analyst:
-                c = self.analyst.cost.today()
-                tier = {"normal": "обычный", "economy": "экономный", "minimal": "минимальный"}[self.analyst.spend_tier()]
-                out.append(f"Модель: сегодня {c['usd']:.2f} $ ({c['calls']} вызовов), режим {tier}; за месяц {self.analyst.cost.month():.2f} $"
-                           + (f" из {float(self.s.get('llm.monthly_budget_usd')):.0f}" if self.s.get("llm.monthly_budget_usd") else ""))
-            if self.exe.driver:
-                out.append("Режим наблюдения выключен: торгую всегда; параметры подбирает еженедельный перерасчёт (/wf)")
         except Exception as e:  # noqa: BLE001
             log.debug("now_lines: %s", e)
         return out

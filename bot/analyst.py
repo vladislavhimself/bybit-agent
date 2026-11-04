@@ -152,6 +152,19 @@ class CostTracker:
     def today(self):
         return self.j.kv_get(self._key(), {"usd": 0.0, "calls": 0})
 
+    def total(self):
+        """Расход за всё время по суточным записям."""
+        total = 0.0
+        try:
+            for r in self.j._run("SELECT k, v FROM kv WHERE k LIKE ?", ("llm_cost_%",), "all"):
+                try:
+                    total += float(json.loads(r["v"]).get("usd", 0))
+                except (ValueError, TypeError, AttributeError):
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
+        return round(total, 2)
+
     def month(self):
         """Расход за календарный месяц (UTC) по всем суточным записям."""
         pref = "llm_cost_" + datetime.now(timezone.utc).strftime("%Y-%m")
