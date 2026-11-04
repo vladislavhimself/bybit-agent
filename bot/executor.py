@@ -597,6 +597,7 @@ class Executor:
                                          "regime": "", "atr": atr, "leverage": 1.0, "opened_ts": int(now), "status": "open", "order_id": "",
                                          "news_driven": 0, "qty_init": float(p["qty"]), "tp_plan": "[]", "tp_hits": 0, "event_key": "",
                                          "mult": float(inst["mult"]), "fees": 0.0})
+                self.j._run("UPDATE trades SET entry_init=entry WHERE id=?", (tid,))
                 try:
                     self.ex.set_stop_loss(sym, stop)
                 except Exception as e:  # noqa: BLE001

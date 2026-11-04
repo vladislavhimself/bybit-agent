@@ -67,6 +67,10 @@ class Journal:
                     self.db.execute(f"ALTER TABLE trades ADD COLUMN {col} {typ}")
                 except sqlite3.OperationalError:
                     pass
+            try:   # старые сделки: первоначальный вход = вход
+                self.db.execute("UPDATE trades SET entry_init=entry WHERE entry_init IS NULL OR entry_init=0")
+            except sqlite3.OperationalError:
+                pass
             self.db.commit()
 
     def _run(self, sql, params=(), fetch=None):
