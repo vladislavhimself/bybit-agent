@@ -90,7 +90,9 @@ class RiskManager:
         locked_now = 0.0
         step = r.get("profit_lock_step_pct", 0)
         t_real = self.tradable(realized) if realized is not None else t
-        if step and self.base > 0 and t_real >= self.base * (1 + step / 100):
+        # фиксируем прибыль в резерв только по реализованному (realized передан): иначе открытая позиция в плюсе
+        # один раз в скане уводила 5% в резерв навсегда, а потом возвращалась к нулю
+        if step and realized is not None and self.base > 0 and t_real >= self.base * (1 + step / 100):
             gain = t_real - self.base
             locked_now = gain * r.get("profit_lock_pct", 0) / 100
             self.reserve += locked_now
@@ -120,7 +122,8 @@ class RiskManager:
         if week_loss >= r["weekly_loss_limit_pct"]:
             return False, f"недельный лимит убытка: -{week_loss:.1f}%"
         if self.cal:
-            black, ev = self.cal.blackout(r.get("macro_blackout_min_before", 0), r.get("macro_blackout_min_after", 0))
+            black, ev = self.cal.blackout(r.get("macro_blackout_min_before", 0), r.get("macro_blackout_min_after", 0),
+                                          exclude_sources=tuple(self.s.get("calendar.blackout_exclude_sources") or ()))
             if black:
                 return False, f"окно макро-события: {ev['title'][:60]}"
         status = f"dd {dd:.1f}% | день {-day_loss:+.1f}% | неделя {-week_loss:+.1f}%"
@@ -208,7 +211,9 @@ class RiskManager:
                 self.last_reject = "same_direction"
                 return False, f"уже {len(same_side)} позиции в ту же сторону (лимит {r.get('max_same_direction', 3)})"
             # суммарный риск по направлению, если все стопы сработают
-            risk_now = sum(abs((x.get("entry") or 0) - (x.get("stop_init") or x.get("stop") or 0)) * (x.get("qty_init") or x.get("qty") or 0)
+            inst_all = self.ex.instruments()
+            risk_now = sum(abs(float(x.get("entry_init") or x.get("entry") or 0) - (x.get("stop_init") or x.get("stop") or 0))
+                           * (x.get("qty_init") or x.get("qty") or 0) * float(inst_all.get(x["symbol"], {}).get("mult") or 1.0)
                            for x in same_side)
             new_risk = t * r["risk_per_trade_pct"].get(tier or "low", 0.4) / 100
             cap = t * r.get("max_direction_risk_pct", 2.5) / 100
@@ -221,7 +226,8 @@ class RiskManager:
             if n_ev >= r.get("max_trades_per_event", 2):
                 self.last_reject = "per_event"
                 return False, f"по этой новости уже {n_ev} сделки (лимит {r.get('max_trades_per_event', 2)})"
-        exposure = sum(p["qty"] * p["mark"] for p in positions)
+        inst_all = self.ex.instruments()
+        exposure = sum(p["qty"] * p["mark"] * float(inst_all.get(p["symbol"], {}).get("mult") or 1.0) for p in positions)
         if t > 0 and exposure / t >= r["max_total_exposure_x"]:
             self.last_reject = "exposure"
             return False, f"суммарная экспозиция {exposure / t:.1f}x >= лимита"
@@ -278,6 +284,8 @@ class RiskManager:
             # целые лоты (Мосбиржа): берём 1 лот, если его риск не больше max_single_lot_risk_pct капитала
             one_lot_risk = dist * mult * float(inst.get("lot_min", 1) or 1)
             hard = t * r.get("max_single_lot_risk_pct", 0) / 100
+            if risk_cap is not None and one_lot_risk > risk_cap:
+                return None, f"один лот рискует {one_lot_risk:.0f}, остаток лимита сектора {risk_cap:.0f}"
             if inst.get("qty_step") == 1 and hard and one_lot_risk <= hard and self.ex.qty_ok(symbol, 1, price):
                 return 1.0, lev
             return None, f"объём ниже минимального (qty={qty:.6f}, риск одного лота {one_lot_risk:.0f})"

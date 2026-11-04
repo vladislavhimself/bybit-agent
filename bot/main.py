@@ -63,6 +63,16 @@ def setup_logging():
 log = logging.getLogger("main")
 
 
+class _NoMood:
+    """Заглушка настроения для рынков, где крипто-индикаторы неприменимы."""
+    def refresh(self, *a, **k):
+        return None
+    def score(self):
+        return 0.0
+    def text(self):
+        return ""
+
+
 class Bot:
     def __init__(self, dry_run=False):
         self.s = Settings()
@@ -81,7 +91,8 @@ class Bot:
         self.analytics = Analytics(self.j, self.s)
         fmt.NAMES = self._names()
         self.exe.shadow = self.shadow
-        self.mood = MarketMood()
+        # индекс страха и жадности криптовалют и стейблкоины к Мосбирже отношения не имеют: там заглушка
+        self.mood = MarketMood() if self.s.market == "crypto" else _NoMood()
         self.analyst = (Analyst(self.s, self.j, self.playbook, self.cal, self.whales, self.mood)
                         if self.s.has_anthropic else None)
         self.factors = Factors(self.s, self.ex) if hasattr(self.ex, "candles_uid") and self.s.get("signals.factor_map") else None
@@ -323,6 +334,7 @@ class Bot:
         events = self.j.recent_events(72)
         params = self.s.get("signals")
         inst = self.ex.instruments()
+        self._universe = list(symbols)
         # отложенные ордера считаем как занятые слоты: по символу, направлению, новости и риску
         open_trades = self.j.open_trades() + [
             {"symbol": p["symbol"], "side": p["side"], "entry": p["price"], "stop_init": p["stop"], "qty": p["qty"],
@@ -514,8 +526,10 @@ class Bot:
         for e in new:
             if e["importance"] < min_imp:
                 continue
+            uni = set(getattr(self, "_universe", []) or [])
             for base in e["affected"]:
-                touched.update(self.ex.symbols_for_base(base))
+                cands = self.ex.symbols_for_base(base)
+                touched.update([c for c in cands if c in uni] or cands[:1])   # только бумаги из скана, не все контракты
             if e["market_wide"] and e["importance"] >= 8:
                 touched.update(self.s.get("universe.always") or [])
         for t in closed:
@@ -654,6 +668,22 @@ class Bot:
 
     # ---------- цикл ----------
     # ---------- ворота перед входом: тренд рынка, свежесть новости, режим наблюдения ----------
+    def _cbr_consensus_reminder(self):
+        """За 3 дня до решения ЦБ напомнить владельцу проверить консенсус в настройках (иначе ложный «сюрприз»)."""
+        try:
+            cons = self.s.get("moex.cbr_consensus")
+            for e in self.cal.upcoming(72):
+                if "ставк" in (e.get("title") or "").lower() and "ЦБ" in (e.get("title") or ""):
+                    key = datetime.fromtimestamp(e["ts"], timezone.utc).strftime("%Y-%m-%d")
+                    if self.j.kv_get("cbr_reminded") != key:
+                        self.j.kv_set("cbr_reminded", key)
+                        self.tg.send("\n\n".join(["📌 <b>РЕШЕНИЕ ЦБ ЧЕРЕЗ 3 ДНЯ</b>",
+                                                   fmt.block("Консенсус в настройках", f"{cons} %" if cons else "не задан, возьму из новостей"),
+                                                   fmt.block("Что проверить", "Если рынок ждёт другую ставку, скажи — обновлю, иначе бот сыграет ложное расхождение")]), html=True)
+                    break
+        except Exception as e:  # noqa: BLE001
+            log.debug("cbr reminder: %s", e)
+
     def _sector_risk_cap(self, sig, open_trades, equity):
         """Равный риск на сектор: суммарный риск открытых сделок сектора (вход−стоп × объём) не больше
         risk.max_sector_risk_pct капитала; новая сделка получает остаток. None = без ограничения."""
@@ -701,7 +731,8 @@ class Bot:
         with_us = b_up if sig.direction == "long" else b_dn
         against = b_dn if sig.direction == "long" else b_up
         thr = float(self.s.get("signals.breadth_threshold", 0.5))
-        if with_us >= thr and i < 2:
+        cap = getattr(sig, "tier_cap", None)
+        if with_us >= thr and i < 2 and (cap is None or order.index(cap) > i):   # не выше потолка, который выставили ворота
             sig.tier = order[i + 1]
             sig.reasons.append(f"ширина рынка за: {with_us * 100:.0f}% бумаг в дневном тренде в нашу сторону, размер больше")
         elif against >= thr and i > 0:
@@ -795,6 +826,7 @@ class Bot:
             against = (sig.direction == "long" and up is False) or (sig.direction == "short" and up is True)
             if against and sig.tier in ("high", "conviction"):
                 sig.tier = "medium"   # новость против тренда рынка: размер не больше среднего
+                sig.tier_cap = "medium"
                 sig.reasons.append("новость против тренда рынка: размер не больше среднего")
         return None
 
@@ -894,6 +926,9 @@ class Bot:
                     if due and now - self.last.get("walkforward", 0) >= 20 * 3600:
                         self.last["walkforward"] = now
                         threading.Thread(target=self.wf.run, kwargs={"apply": True, "notify": True}, daemon=True, name="wf").start()
+                if self.s.market == "moex" and now - self.last.get("cbr_reminder", 0) >= 3600:
+                    self.last["cbr_reminder"] = now
+                    self._cbr_consensus_reminder()
                 if self.divcal and time.time() - self.divcal.ts > 6 * 3600:
                     threading.Thread(target=self.divcal.refresh, daemon=True, name="divcal").start()
                 self.mood.refresh()

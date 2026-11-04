@@ -75,7 +75,8 @@ class WalkForward:
                     continue
                 new = new.copy()
                 new["ts"] = (new["ts"] // 1000) if last <= 1e11 else new["ts"]   # в CSV Мосбиржи ts в секундах
-                new = new[new.ts > last][["ts", "open", "high", "low", "close", "volume", "turnover"]]
+                cutoff = (int(time.time()) // 3600) * 3600   # текущий незакрытый час не сохраняем, иначе он остаётся навсегда
+                new = new[(new.ts > last) & (new.ts < cutoff)][["ts", "open", "high", "low", "close", "volume", "turnover"]]
                 if len(new):
                     pd.concat([df, new]).drop_duplicates("ts").sort_values("ts").to_csv(p, index=False)
                     n_ok += 1

@@ -61,11 +61,17 @@ class Disclosure:
         return out
 
     def _match(self, issuer):
+        """Сначала точное совпадение, затем самое длинное название, входящее в название эмитента:
+        «Газпром нефть» должен попасть в SIBN, а не в GAZP; «Магнитогорский комбинат» — не в «Магнит»."""
         n = _norm(issuer)
-        for name, base in self._issuers().items():
-            if name in n or n in name:
-                return base
-        return None
+        names = self._issuers()
+        if n in names:
+            return names[n]
+        best = None
+        for name, base in names.items():
+            if name and name in n and (best is None or len(name) > len(best[0])):
+                best = (name, base)
+        return best[1] if best else None
 
     def poll(self, now, max_age=6 * 3600):
         """Новые сообщения по нашим эмитентам: список элементов для новостного конвейера."""
@@ -117,7 +123,9 @@ class Disclosure:
             for t in soup.find_all(["script", "style", "nav", "header", "footer"]):
                 t.decompose()
             txt = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
-            i = txt.find("Сообщение о существенном факте")
+            i = txt.find("2. Содержание сообщения")   # реквизиты эмитента модели не нужны, суть — во втором разделе
+            if i < 0:
+                i = txt.find("Сообщение о существенном факте")
             if i < 0:
                 i = txt.find("1. Общие сведения")
             if i < 0:

@@ -145,7 +145,7 @@ class Journal:
 
     def update_pnl(self, trade_id, exit_price, pnl, reason=None):
         t = self._run("SELECT * FROM trades WHERE id=?", (trade_id,), "one")
-        risk = abs(t["entry"] - t["stop_init"]) * (t["qty_init"] or t["qty"]) * (t["mult"] or 1.0)
+        risk = abs(float(t.get("entry_init") or t["entry"]) - t["stop_init"]) * (t["qty_init"] or t["qty"]) * (t["mult"] or 1.0)
         pnl_r = pnl / risk if risk > 0 else 0.0
         self._run("UPDATE trades SET exit=?, pnl=?, pnl_r=?, close_reason=COALESCE(?, close_reason) WHERE id=?",
                   (exit_price, pnl, pnl_r, reason, trade_id))
@@ -210,7 +210,7 @@ class Journal:
 
     def close_trade(self, trade_id, exit_price, pnl, reason, fees=None):
         t = self._run("SELECT * FROM trades WHERE id=?", (trade_id,), "one")
-        risk = abs(t["entry"] - t["stop_init"]) * (t["qty_init"] or t["qty"]) * (t["mult"] or 1.0)
+        risk = abs(float(t.get("entry_init") or t["entry"]) - t["stop_init"]) * (t["qty_init"] or t["qty"]) * (t["mult"] or 1.0)
         pnl_r = pnl / risk if risk > 0 else 0.0
         self._run("UPDATE trades SET status='closed', closed_ts=?, exit=?, pnl=?, pnl_r=?, close_reason=?, "
                   "fees=COALESCE(?, fees) WHERE id=?",

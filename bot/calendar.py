@@ -103,11 +103,12 @@ class Calendar:
                 return f"{e['title']} через {(e['ts'] - now) / 3600:.1f} ч"
         return None
 
-    def blackout(self, before_min, after_min, now=None):
-        """(True, событие) если сейчас окно вокруг релиза высокой важности."""
+    def blackout(self, before_min, after_min, now=None, exclude_sources=()):
+        """(True, событие) если сейчас окно вокруг релиза высокой важности. exclude_sources — источники, которые
+        в окно не входят (на Мосбирже американские релизы и ФРС входы не блокируют: 55 блокировок за неделю, выборы в Конгресс)."""
         now = now or time.time()
         for e in self.events:
-            if e["impact"] != "high":
+            if e["impact"] != "high" or e.get("source") in (exclude_sources or ()):
                 continue
             if e["ts"] - before_min * 60 <= now <= e["ts"] + after_min * 60:
                 return True, e

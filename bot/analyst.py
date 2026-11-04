@@ -116,6 +116,16 @@ SYSTEM_NEWS = """Ты аналитик крипторынка внутри ав�
   когда толпа ждала 13.5% и стояла в лонге = bearish, толпе придётся разгружаться);
 - reasoning: 1-2 предложения на русском, включая психологический довод, если он есть."""
 
+SYSTEM_SETUP_MOEX = """Ты опытный трейдер-риск-менеджер на Московской бирже. Бот собрал сетап с высокой уверенностью и хочет
+войти увеличенным размером. Твоя роль: искать причины НЕ входить. Учитывай: режим рынка (индекс выше/ниже 20-дневной
+средней, ширина рынка), перегретость (RSI, растяжение от средних), свежесть новостей (не отыграно ли уже, не слух ли),
+ликвидность бумаги, близость уровней, запланированные события в ближайшие часы (решение ЦБ по ставке, недельная
+инфляция, дивидендные отсечки, отчёты). Психология: кто ещё не в позиции и будет покупать? Если толпа уже в лонге,
+лонг слаб даже на хорошей новости. Если цена не растёт на хорошей новости, это сигнал слабости. Если на плохой новости
+продажи иссякли и цена держится, шорт опасен. «Покупай слух, продавай факт» для ожидаемых событий. Соглашайся только
+при отсутствии весомых контраргументов. confidence: твоя оценка вероятности, что сделка дойдёт до первого тейка раньше
+стопа. reasoning и key_risk на русском, коротко."""
+
 SYSTEM_SETUP = """Ты опытный трейдер-риск-менеджер. Бот собрал сетап с высокой уверенностью и хочет войти увеличенным
 размером. Твоя роль: искать причины НЕ входить. Учитывай: режим рынка, перегретость (RSI, ставка финансирования,
 открытый интерес, доля лонгов, индекс страха и жадности), свежесть новостей (не отыграно ли уже, не слух ли),
@@ -143,6 +153,7 @@ class CostTracker:
         p_in, p_out = PRICES.get(model, (5.0, 25.0))
         cost = (getattr(usage, "input_tokens", 0) or 0) * p_in / 1e6 + (getattr(usage, "output_tokens", 0) or 0) * p_out / 1e6
         cost += (getattr(usage, "cache_read_input_tokens", 0) or 0) * p_in * 0.1 / 1e6
+        cost += (getattr(usage, "cache_creation_input_tokens", 0) or 0) * p_in * 1.25 / 1e6
         with self.lock:
             cur = self.j.kv_get(self._key(), {"usd": 0.0, "calls": 0})
             cur["usd"] += cost
@@ -205,16 +216,6 @@ class Analyst:
         if mcap and self.cost.month() >= 0.8 * mcap:
             return "economy"
         return "normal"
-
-    def _main_model(self):
-        """Основная модель, пока укладываемся в дневной бюджет, иначе дешёвая."""
-        if self.budget and self.cost.today()["usd"] >= self.budget:
-            if not self._budget_warned:
-                log.warning("Дневной бюджет модели %.2f$ исчерпан, до конца суток работает %s", self.budget, self.cheap)
-                self._budget_warned = True
-            return self.cheap
-        self._budget_warned = False
-        return self.model
 
     def over_budget(self):
         return bool(self.budget) and self.cost.today()["usd"] >= self.budget
@@ -321,16 +322,13 @@ class Analyst:
         max_chars = int(self.s.get("llm.article_max_chars_economy", 1200) if tier != "normal" else self.s.get("llm.article_max_chars", 2500))
         user = f"Источник: {source}\nЗаголовок: {title}\nТекст: {(summary or '')[:max_chars]}\n"
         ctx_parts = []
-        if self.market_notes:
-            ctx_parts.append(self.market_notes)
-        ctx = self._context()
+        ctx = self._context()   # заметки о рынке уже внутри
         if ctx:
             ctx_parts.append(ctx)
         if lessons_text:
             ctx_parts.append("Уроки из прошлых сделок:\n" + lessons_text)
         system = [SYSTEM_NEWS_MOEX if self.s.get("market") == "moex" else SYSTEM_NEWS, "Контекст рынка:\n\n" + "\n\n".join(ctx_parts)]
         fast = {f"tg:{c}" for c in (self.s.get("sources.telegram_fast") or [])} | {"disclosure"}
-        fast_rss = set(self.s.get("sources.rss_fast") or [])
         cheap_src = set(self.s.get("llm.cheap_sources") or [])
         if tier == "minimal":
             model = self.cheap                                   # всё дешёвой, но разбор не останавливается
@@ -366,7 +364,7 @@ class Analyst:
         d["contrarian_risk"] = max(0.0, min(1.0, float(d.get("contrarian_risk") or 0.0)))
         d["surprise"] = max(-1.0, min(1.0, float(d.get("surprise") or 0.0)))
         d["expected"] = (d.get("expected") or "")[:200]
-        if d["expected"] and abs(d["surprise"]) >= 0.5:
+        if d["expected"] and abs(d["surprise"]) >= 0.5 and not d["is_rumor"]:   # слух расхождением не считаем
             # новость расходится с ожиданиями: торгуем расхождение, а не заголовок; это сильное событие
             want = "bullish" if d["surprise"] > 0 else "bearish"
             if d["direction"] != want:
@@ -393,8 +391,9 @@ class Analyst:
         payload = {
             "symbol": symbol, "proposed_direction": direction,
             "ta": {k: ta.get(k) for k in keys},
-            "positioning": {"funding_rate_8h": ticker["funding"], "oi_value_usd": ticker["oi_value"],
-                            "pct_24h": ticker["pct24h"], "turnover_24h_usd": ticker["turnover24h"]},
+            "positioning": ({"pct_24h": ticker["pct24h"], "turnover_24h": ticker["turnover24h"]} if self.s.get("market") == "moex"
+                            else {"funding_rate_8h": ticker["funding"], "oi_value_usd": ticker["oi_value"],
+                                  "pct_24h": ticker["pct24h"], "turnover_24h_usd": ticker["turnover24h"]}),
             "recent_events": [{"type": e["event_type"], "importance": e["importance"], "direction": e["direction"],
                                "age_hours": e.get("age_h"), "title": e["title"]} for e in events[:8]],
         }
@@ -405,7 +404,7 @@ class Analyst:
         if lessons_text:
             user += f"\n\nУроки из прошлых сделок:\n{lessons_text}"
         try:
-            v = self._parse(self.model, SYSTEM_SETUP, user, SetupVerdict, 12000, "high")
+            v = self._parse(self.model, SYSTEM_SETUP_MOEX if self.s.get("market") == "moex" else SYSTEM_SETUP, user, SetupVerdict, 12000, "high")
         except anthropic.APIError as e:
             log.error("judge_setup: %s", e)
             return None

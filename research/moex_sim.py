@@ -263,7 +263,7 @@ def run(feats, gates=None, **exit_kw):
             res.append((t, sym, sg, out[0], t_exit))
             if G["max_per_day"]:
                 day_cnt[dk] = day_cnt.get(dk, 0) + 1
-            busy = out[1] + G["busy"]
+            busy = out[2] - 1 + G["busy"]   # пауза от бара выхода: бот не открывает вторую сделку по бумаге, пока первая открыта
     return pd.DataFrame(res, columns=["t", "sym", "sg", "r", "t_exit"])
 
 

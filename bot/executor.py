@@ -280,7 +280,7 @@ class Executor:
             # частичные тейки: позиция уменьшилась
             if pos["qty"] < t["qty"] - 1e-12:
                 hits = t["tp_hits"] or 0
-                taken = (t["qty_init"] or t["qty"]) - pos["qty"]
+                taken = (t["qty_init"] or t["qty"]) + float(t.get("add_qty") or 0) - pos["qty"]
                 acc, new_hits = 0.0, 0
                 for lvl in t["tp_plan"]:
                     acc += lvl["qty"]
@@ -295,7 +295,7 @@ class Executor:
                         fmt.block("Остаток", f"{pos['qty']:g}, стоп переносится в безубыток"),
                     ]), html=True)
                     if hits == 0 and r.get("breakeven_after_tp1"):
-                        be = t["entry"] * (1 + 0.0015 * (1 if long else -1))
+                        be = e0 * (1 + 0.0015 * (1 if long else -1))
                         self._move_stop(t, be, "безубыток после первого тейка")
                 t["qty"], t["tp_hits"] = pos["qty"], new_hits
 
@@ -360,14 +360,14 @@ class Executor:
 
             # безубыток, как только прибыль достигла breakeven_r
             if r_now >= r.get("breakeven_r", 0.7):
-                be = t["entry"] * (1 + 0.0015 * (1 if long else -1))
+                be = e0 * (1 + 0.0015 * (1 if long else -1))
                 self._move_stop(t, be, f"безубыток при {r_now:.2f}R")
 
             # трейлинг остатка: ступенями по R и не дальше giveback_r от пика
             if not daily_mode and r_now >= r["trail_after_r"]:
                 step = int(r_now)
-                ladder = t["entry"] + (step - 1 + 0.2) * risk_dist * (1 if long else -1)
-                from_peak = t["entry"] + (mfe - gb_r) * risk_dist * (1 if long else -1)
+                ladder = e0 + (step - 1 + 0.2) * risk_dist * (1 if long else -1)
+                from_peak = e0 + (mfe - gb_r) * risk_dist * (1 if long else -1)
                 new_stop = max(ladder, from_peak) if long else min(ladder, from_peak)
                 self._move_stop(t, new_stop, f"трейлинг R={r_now:.2f}, пик {mfe:.2f}R")
         return closed
@@ -385,7 +385,10 @@ class Executor:
             closes = d["close"].astype(float)
             if len(closes) < 22:
                 return None
-            sma = float(closes.iloc[-21:-1].mean())
+            import datetime as _dt
+            last_day = _dt.datetime.fromtimestamp(int(d["ts"].iloc[-1]) / 1000, _dt.timezone.utc).date()
+            closed = closes.iloc[:-1] if last_day >= _dt.datetime.now(_dt.timezone.utc).date() else closes
+            sma = float(closed.iloc[-20:].mean())
         except Exception as e:  # noqa: BLE001
             log.debug("sma20d %s: %s", sym, e)
             return None
@@ -395,7 +398,11 @@ class Executor:
     def _last_hour_close(self, sym):
         try:
             d = self.ex.klines(sym, "60", 3)
-            return float(d["close"].iloc[-2]) if len(d) >= 2 else None   # последняя закрытая часовая свеча
+            import datetime as _dt
+            ts_last = int(d["ts"].iloc[-1]) / 1000
+            # если последняя свеча ещё идёт (её час не закрылся) — берём предыдущую, иначе она и есть последняя закрытая
+            in_progress = time.time() - ts_last < 3600
+            return float(d["close"].iloc[-2] if (in_progress and len(d) >= 2) else d["close"].iloc[-1])
         except Exception:  # noqa: BLE001
             return None
 
@@ -501,7 +508,8 @@ class Executor:
                     # общерыночная и важная: не выходим, а режем риск вдвое — стоп на полпути к входу
                     risk_dist = abs(t["entry"] - t["stop_init"])
                     if risk_dist > 0:
-                        new_stop = t["entry"] - 0.5 * risk_dist if long else t["entry"] + 0.5 * risk_dist
+                        e0 = float(t.get("entry_init") or t["entry"])
+                        new_stop = e0 - 0.5 * risk_dist if long else e0 + 0.5 * risk_dist
                         self._move_stop(t, new_stop, f"общерыночная контр-новость imp {e['importance']}: стоп ближе")
                     break
         return closed
@@ -553,9 +561,14 @@ class Executor:
             # а точную цифру дошлём, когда брокер ответит — без «+0, уточню позже»
             long = t["side"] == "Buy"
             exit_price = float(t.get("stop") or t["entry"])
+            if not reason.startswith("стоп"):
+                try:
+                    exit_price = float(self.ex.last_price(t["symbol"]) or exit_price)   # закрывались по рынку
+                except Exception:  # noqa: BLE001
+                    pass
             mult = float(t.get("mult") or 1.0)
             pnl = (exit_price - t["entry"]) * float(t["qty"]) * mult * (1 if long else -1) - float(t.get("fees") or 0)
-            reason = reason + f" (результат по цене стопа {exit_price:g}, точную цифру уточню по данным брокера)"
+            reason = reason + f" (результат по цене {'стопа' if reason.startswith('стоп') else 'закрытия'} {exit_price:g}, точную цифру уточню по данным брокера)"
         else:
             pnl, exit_price, fees = res
         self.j.close_trade(t["id"], exit_price, pnl, reason, fees)

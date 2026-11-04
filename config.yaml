@@ -148,7 +148,6 @@ llm:
   daily_budget_usd: 4            # при превышении до конца суток всё переводится на дешёвую модель
   workers: 4                     # параллельных разборов новостей: в час пик очередь к модели доходила до 20 минут
   prefilter_batch: 8             # дешёвый фильтр смотрит до 8 заголовков за один вызов (расход на фильтр ÷5)
-  cheap_slow_channels: true      # Telegram-каналы вне быстрого яруса разбирает дешёвая модель
   # Второстепенные источники (пересказы, обзоры): новости из них разбирает дешёвая модель
   cheap_sources: [ambcrypto, utoday, newsbtc, beincrypto, cryptonews, cryptoslate, coinjournal, thedefiant,
                   tg:crypto_headlines, tg:incrypted, tg:ForkLog, tg:MuskTweets, tg:whalebotalerts]
@@ -277,10 +276,12 @@ markets:
       pyramid_part: 0.5                 # добор +50% объёма при +1.5R и тренде 4ч за: +12% к итогу; вместе с дневным выходом PF 1.58
       pyramid_r: 1.5
       max_sector_risk_pct: 1.5          # суммарный риск открытых сделок одного сектора не больше 1.5% капитала (равный риск на сектор)
+      max_same_direction: 4             # крипто-лимит 2 к Мосбирже не относится: 5 позиций, до 4 в одну сторону
+      max_direction_risk_pct: 3.5       # риск по направлению (с учётом множителя лота)
     signals:
       use_playbook: false               # статистика по BTC к акциям не относится
       trend_gate: true                  # лонги только при растущем индексе и дневном тренде вверх; в падении только шорты
-      trend_index: [IMOEXF, MOEX]       # по чему считаем режим рынка (индекс выше/ниже 20-дневной средней)
+      trend_index: [IMOEXF]             # режим рынка по фьючерсу на индекс (MOEX — это акция биржи, не индекс)
       # Архив новостей 2024-2026 (research/news_backtest.py, 25 791 событие): общерыночные и медвежьи новости
       # направление не предсказывают (48-50%); плюс только у бычьих новостей по бумаге важностью 7+.
       news_mode: stock_long_only        # новостной счёт только из бычьих новостей по конкретной бумаге; шорты — по технике
@@ -304,7 +305,8 @@ markets:
         transport: {brent: -0.3, rgbi: 0.5}
         index: {brent: 0.5, rgbi: 0.5}
     calendar:
-      us_macro: true
+      us_macro: true                  # американские релизы в контексте аналитика остаются...
+      blackout_exclude_sources: [forexfactory, fed, coinmarketcal]   # ...но входы на Мосбирже не блокируют (55 блокировок за неделю, выборы в Конгресс)
       fixed_events:
         - {date: "2026-10-23", time: "13:30", tz: "Europe/Moscow", title: "ЦБ РФ: решение по ключевой ставке", impact: high}
         - {date: "2026-12-18", time: "13:30", tz: "Europe/Moscow", title: "ЦБ РФ: решение по ключевой ставке", impact: high}
