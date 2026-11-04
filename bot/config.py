@@ -34,6 +34,8 @@ TUNABLE_BOUNDS = {
     "risk.breakeven_r": (0.5, 1.5),             # еженедельный перерасчёт на истории (bot/walkforward.py)
     "risk.symbol_cooldown_hours": (1, 24),
     "risk.stall_hours": (6, 48),
+    "risk.daily_trend_exit": (0, 1),
+    "risk.pyramid_part": (0.0, 1.0),
     "signals.range_shorts": (0, 1),
     "entry.pullback_atr": (0.2, 0.8),          # по теневым сделкам неисполненных откатов
 }
@@ -112,7 +114,7 @@ class Settings:
     # сделкам они закрыты — именно он опустил порог силы до 0.45 (PF 1.03 на 7 годах против 1.30 при 0.55)
     WF_OWNED = ("signals.entry_threshold", "signals.ta_weight", "risk.stop_atr_mult", "risk.breakeven_r",
                 "signals.max_extension_atr", "risk.symbol_cooldown_hours", "signals.range_shorts", "risk.max_hours_in_trade",
-                "risk.stall_hours")
+                "risk.stall_hours", "risk.daily_trend_exit", "risk.pyramid_part")
 
     def set_learned(self, path, value, max_step=0.2, source="review"):
         """Применить выученный параметр. Возвращает (ok, сообщение)."""

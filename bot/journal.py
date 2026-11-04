@@ -60,7 +60,9 @@ class Journal:
                 except sqlite3.OperationalError:
                     pass
             for col, typ in (("event_key", "TEXT DEFAULT ''"), ("mfe_r", "REAL DEFAULT 0"), ("mfe_ts", "INTEGER DEFAULT 0"),
-                             ("mult", "REAL DEFAULT 1"), ("fees", "REAL DEFAULT 0")):
+                             ("mult", "REAL DEFAULT 1"), ("fees", "REAL DEFAULT 0"),
+                             ("entry_init", "REAL DEFAULT 0"), ("add_qty", "REAL DEFAULT 0"), ("add_entry", "REAL DEFAULT 0"),
+                             ("add_ts", "INTEGER DEFAULT 0")):
                 try:
                     self.db.execute(f"ALTER TABLE trades ADD COLUMN {col} {typ}")
                 except sqlite3.OperationalError:
@@ -190,6 +192,11 @@ class Journal:
     def last_entry_ts(self, symbol, side):
         r = self._run("SELECT MAX(opened_ts) AS m FROM trades WHERE symbol=? AND side=?", (symbol, side), "one")
         return (r or {}).get("m") or 0
+
+    def update_add(self, trade_id, qty_total, entry_avg, add_qty, add_entry):
+        """Пирамидинг: позиция стала больше, средний вход сместился; первоначальный вход хранится в entry_init."""
+        self._run("UPDATE trades SET qty=?, entry=?, add_qty=?, add_entry=?, add_ts=? WHERE id=?",
+                  (qty_total, entry_avg, add_qty, add_entry, int(time.time()), trade_id))
 
     def update_mfe(self, trade_id, mfe_r):
         self._run("UPDATE trades SET mfe_r=?, mfe_ts=? WHERE id=?", (mfe_r, int(time.time()), trade_id))

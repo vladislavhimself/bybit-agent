@@ -118,13 +118,19 @@ def load(hist_dir, symbols, days):
         df = df[df.ts >= df.ts.max() - days * 86400000]
         df = df[df.volume.cumsum() > 0].reset_index(drop=True)
         if len(df) >= 1500:
-            feats[sym] = features(df)
+            f = features(df)
+            d = f.close.resample("1D").last().dropna()
+            f["sma20d"] = d.rolling(20).mean().shift(1).reindex(f.index, method="ffill")
+            feats[sym] = f
     return feats
 
 
-def simulate(f, i, sg, stop_mult=2.0, tps=((1.5, 0.25), (2.5, 0.35)), be_r=0.7, gb_r=0.0, gb_min=0.0,
-             stall_h=12, trail_after=1.0, max_h=96, pull=0.5, wait=2, tiers=None):
+def simulate(f, i, sg, stop_mult=2.0, tps=((1.5, 0.25), (2.5, 0.35)), be_r=0.7, tiers=((1.5, 1.5), (3.0, 1.0), (5.0, 0.6)),
+              stall_h=12, trail_after=1.0, max_h=96, pull=0.5, wait=2, gb_r=0.0, gb_min=0.0, pyramid=0.0, pyr_r=1.5, daily_exit=False, max_h_daily=720):
+    """Как ms.simulate, плюс пирамидинг и выход по дневному тренду. Результат в R от первоначального риска."""
     o, hi, lo, cl = f.open.values, f.high.values, f.low.values, f.close.values
+    sma = f.sma20d.values if "sma20d" in f.columns else None
+    t4 = f.trend_4h.values
     a = f.atr.values[i]
     n = len(cl)
     lim = cl[i] - sg * pull * a
@@ -139,9 +145,11 @@ def simulate(f, i, sg, stop_mult=2.0, tps=((1.5, 0.25), (2.5, 0.35)), be_r=0.7, 
     R = stop_mult * a
     stop = entry - sg * R
     qty, realized, mfe, mfe_bar = 1.0, 0.0, 0.0, start
-    exit_bar = None
+    added = False
     tp_state = [[lvl, part, False] for lvl, part in tps]
-    end = min(n, start + max_h)
+    horizon = max_h_daily if daily_exit else max_h
+    end = min(n, start + horizon)
+    exit_bar = None
     for j in range(start, end):
         if (sg > 0 and lo[j] <= stop) or (sg < 0 and hi[j] >= stop):
             ex = stop * (1 - sg * SLIP)
@@ -161,16 +169,38 @@ def simulate(f, i, sg, stop_mult=2.0, tps=((1.5, 0.25), (2.5, 0.35)), be_r=0.7, 
             mfe, mfe_bar = cf, j
         r_now = sg * (cl[j] - entry) / R
         hours = j - start + 1
-        if qty > 0 and ((hours >= max_h and r_now < 0.5) or (stall_h and 0.1 <= r_now < 1.0 and hours >= stall_h and j - mfe_bar >= stall_h)):
+        # пирамидинг: добор при +pyr_r R, тренд 4ч в нашу сторону; добор по текущей цене, учитывается как доля позиции
+        if pyramid and not added and r_now >= pyr_r and (t4[j] > 0) == (sg > 0) and t4[j] != 0 and qty > 0:
+            add_px = cl[j] * (1 + sg * SLIP)
+            # добранная часть: её результат = pyramid * sg * (exit - add_px) / R; учитываем через смещение "среднего входа"
+            # проще: храним добор отдельно
+            added = True
+            add_qty, add_entry = pyramid, add_px
+            realized -= add_qty * FEE * add_px / R
+        if daily_exit and sma is not None and not np.isnan(sma[j]):
+            # дневной тренд сломан: закрытие часа по другую сторону 20-дневной средней после того, как сделка была в плюсе
+            if hours >= 24 and ((sg > 0 and cl[j] < sma[j]) or (sg < 0 and cl[j] > sma[j])):
+                ex = cl[j] * (1 - sg * SLIP)
+                realized += qty * sg * (ex - entry) / R - qty * FEE * ex / R
+                if added:
+                    realized += add_qty * sg * (ex - add_entry) / R - add_qty * FEE * ex / R
+                    added = False
+                qty = 0
+                exit_bar = j
+                break
+        if not daily_exit and qty > 0 and ((hours >= max_h and r_now < 0.5) or (stall_h and 0.1 <= r_now < 1.0 and hours >= stall_h and j - mfe_bar >= stall_h)):
             ex = cl[j] * (1 - sg * SLIP)
             realized += qty * sg * (ex - entry) / R - qty * FEE * ex / R
+            if added:
+                realized += add_qty * sg * (ex - add_entry) / R - add_qty * FEE * ex / R
+                added = False
             qty = 0
             exit_bar = j
             break
         if be_r and mfe >= be_r:
             be = entry * (1 + sg * 0.0015)
             stop = max(stop, be) if sg > 0 else min(stop, be)
-        if tiers:
+        if tiers and not daily_exit:
             gb_now = None
             for pk, gb in tiers:
                 if mfe >= pk:
@@ -178,20 +208,20 @@ def simulate(f, i, sg, stop_mult=2.0, tps=((1.5, 0.25), (2.5, 0.35)), be_r=0.7, 
             if gb_now is not None:
                 gb = entry + sg * (mfe - gb_now) * R
                 stop = max(stop, gb) if sg > 0 else min(stop, gb)
-        elif gb_r and mfe >= gb_min:
-            gb = entry + sg * (mfe - gb_r) * R
-            stop = max(stop, gb) if sg > 0 else min(stop, gb)
-        if trail_after and r_now >= trail_after:
+        if trail_after and r_now >= trail_after and not daily_exit:
             lad = entry + sg * (int(r_now) - 1 + 0.2) * R
             stop = max(stop, lad) if sg > 0 else min(stop, lad)
         if qty <= 1e-9:
             exit_bar = j
             break
-    if qty > 1e-9:
-        ex = cl[end - 1]
-        realized += qty * sg * (ex - entry) / R - qty * FEE * ex / R
     if exit_bar is None:
         exit_bar = end - 1
+    if qty > 1e-9:
+        ex = cl[exit_bar]
+        realized += qty * sg * (ex - entry) / R - qty * FEE * ex / R
+    if added:
+        ex = (stop * (1 - sg * SLIP)) if (sg > 0 and lo[exit_bar] <= stop) or (sg < 0 and hi[exit_bar] >= stop) else cl[exit_bar]
+        realized += add_qty * sg * (ex - add_entry) / R - add_qty * FEE * ex / R
     return realized - FEE * entry / R, start, exit_bar + 1
 
 

@@ -18,6 +18,7 @@ REASONS_RU = {
     "limit_same_base": "по этой компании уже есть позиция", "limit_sector": "лимит позиций в секторе",
     "div_gap": "дивидендная отсечка на днях",
     "limit_news_exit_cooldown": "недавно закрыт контр-новостью", "limit_daily_entries": "лимит входов в сутки по компании",
+    "limit_sector_risk": "лимит риска на сектор",
 }
 
 

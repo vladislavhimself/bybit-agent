@@ -63,7 +63,7 @@ class Executor:
                 return "market", f"новость важности {newest['importance']} вышла {age_min:.0f} мин назад"
         return "pullback", f"цена оторвалась от средней 15м на {pull:+.2f} ATR, ждём откат"
 
-    def open(self, sig, ta, equity, positions):
+    def open(self, sig, ta, equity, positions, risk_cap=None):
         r = self.s.get("risk")
         e = self.s.get("entry") or {}
         price = ta.get("price_now") or ta["close"]
@@ -76,7 +76,7 @@ class Executor:
         mode, why = self._entry_mode(sig, ta)
         if mode == "market":
             stop = price - dist if long else price + dist
-            qty, lev = self.risk.size(sig.symbol, equity, price, stop, sig.tier, positions)
+            qty, lev = self.risk.size(sig.symbol, equity, price, stop, sig.tier, positions, risk_cap=risk_cap)
             if qty is None:
                 log.info("%s: пропуск, %s", sig.symbol, lev)
                 return None
@@ -101,7 +101,7 @@ class Executor:
         k = e.get("pullback_atr_news", 0.15) if sig.news_driven else e.get("pullback_atr", 0.25)
         limit = price - k * ta["atr"] if long else price + k * ta["atr"]
         stop = limit - dist if long else limit + dist
-        qty, lev = self.risk.size(sig.symbol, equity, limit, stop, sig.tier, positions)
+        qty, lev = self.risk.size(sig.symbol, equity, limit, stop, sig.tier, positions, risk_cap=risk_cap)
         if qty is None:
             log.info("%s: пропуск, %s", sig.symbol, lev)
             return None
@@ -188,6 +188,7 @@ class Executor:
         })
         risk_pct = r["risk_per_trade_pct"][sig.tier]
         ta_short = {"trend_1h": 0, "trend_4h": 0, "trend_d": 0, "breakout": 0, "rsi": 0}
+        self.j._run("UPDATE trades SET entry_init=entry WHERE id=?", (tid,))
         self.tg.send(fmt.entry_message(sig, entry, qty, lev, stop, plan, risk_pct, abs(entry - stop) * qty * mult,
                                        self.risk.tradable(equity), equity, ta_short, mult=mult, fee=fee_in), html=True)
         return tid
@@ -268,10 +269,12 @@ class Executor:
                 continue
             long = t["side"] == "Buy"
             mark = pos["mark"] or t["entry"]
-            risk_dist = abs(t["entry"] - t["stop_init"])
+            e0 = float(t.get("entry_init") or t["entry"])   # R всегда от первоначального входа, даже после добора
+            risk_dist = abs(e0 - t["stop_init"])
             if risk_dist <= 0:
                 continue
-            r_now = ((mark - t["entry"]) if long else (t["entry"] - mark)) / risk_dist
+            r_now = ((mark - e0) if long else (e0 - mark)) / risk_dist
+            daily_mode = bool(r.get("daily_trend_exit"))
             hours = (time.time() - t["opened_ts"]) / 3600
 
             # частичные тейки: позиция уменьшилась
@@ -296,6 +299,22 @@ class Executor:
                         self._move_stop(t, be, "безубыток после первого тейка")
                 t["qty"], t["tp_hits"] = pos["qty"], new_hits
 
+            # 3) пирамидинг: добор части при +pyramid_r R, если тренд 4ч в нашу сторону (7 лет: +12% к итогу)
+            pyr = float(r.get("pyramid_part") or 0)
+            if pyr and not (t.get("add_qty") or 0) and not (t.get("add_ts") or 0) and r_now >= float(r.get("pyramid_r", 1.5)) and hours >= 1:
+                self._pyramid(t, pos, pyr, long, mark)
+            # 7) выход по дневному тренду: держим, пока часовое закрытие по нашу сторону 20-дневной средней (7 лет: +38%)
+            if daily_mode and hours >= 24:
+                sma = self._sma20d(sym)
+                last_close = self._last_hour_close(sym) or mark
+                if sma and ((long and last_close < sma) or (not long and last_close > sma)):
+                    self._close_now(t, f"дневной тренд сломан: закрытие {last_close:g} за 20-дневной средней {sma:g}")
+                    closed.append(t)
+                    continue
+                if hours >= float(r.get("max_hours_daily_exit", 720)) and r_now < 0.5:
+                    self._close_now(t, f"тайм-стоп {hours:.0f}ч (дневной режим), R={r_now:.2f}")
+                    closed.append(t)
+                    continue
             # программный стоп: подстраховка, если стоп-заявка на бирже не сработала (или её нет)
             if r.get("soft_stops") and ((long and mark <= t["stop"]) or (not long and mark >= t["stop"])):
                 self._close_now(t, f"стоп {t['stop']:g} (программный)")
@@ -310,7 +329,7 @@ class Executor:
                 self.j.update_mfe(t["id"], mfe)
 
             # тайм-стоп: сделка не идёт
-            if hours >= r["max_hours_in_trade"] and r_now < 0.5:
+            if not daily_mode and hours >= r["max_hours_in_trade"] and r_now < 0.5:
                 self._close_now(t, f"тайм-стоп {hours:.0f}ч, R={r_now:.2f}")
                 closed.append(t)
                 continue
@@ -327,14 +346,14 @@ class Executor:
             for pk, gb in (r.get("giveback_tiers") or []):
                 if mfe >= pk:
                     gb_r, gb_min = gb, pk
-            if hours >= min_hold and mfe >= gb_min and r_now <= mfe - gb_r:
+            if not daily_mode and hours >= min_hold and mfe >= gb_min and r_now <= mfe - gb_r:
                 self._close_now(t, f"защита прибыли: пик был {mfe:.2f}R, сейчас {r_now:.2f}R")
                 closed.append(t)
                 continue
 
             # сделка застряла: в плюсе, но пик не обновлялся stall_hours
             stall = r.get("stall_hours", 12)
-            if hours >= min_hold and 0.1 <= r_now < 1.0 and (time.time() - mfe_ts) / 3600 >= stall and hours >= stall:
+            if not daily_mode and hours >= min_hold and 0.1 <= r_now < 1.0 and (time.time() - mfe_ts) / 3600 >= stall and hours >= stall:
                 self._close_now(t, f"сделка застряла: {r_now:.2f}R без прогресса {stall}ч")
                 closed.append(t)
                 continue
@@ -345,13 +364,84 @@ class Executor:
                 self._move_stop(t, be, f"безубыток при {r_now:.2f}R")
 
             # трейлинг остатка: ступенями по R и не дальше giveback_r от пика
-            if r_now >= r["trail_after_r"]:
+            if not daily_mode and r_now >= r["trail_after_r"]:
                 step = int(r_now)
                 ladder = t["entry"] + (step - 1 + 0.2) * risk_dist * (1 if long else -1)
                 from_peak = t["entry"] + (mfe - gb_r) * risk_dist * (1 if long else -1)
                 new_stop = max(ladder, from_peak) if long else min(ladder, from_peak)
                 self._move_stop(t, new_stop, f"трейлинг R={r_now:.2f}, пик {mfe:.2f}R")
         return closed
+
+    def _sma20d(self, sym):
+        """20-дневная средняя по завершённым дням (сегодняшний день не считаем), кеш час."""
+        c = getattr(self, "_sma_cache", None)
+        if c is None:
+            c = self._sma_cache = {}
+        v = c.get(sym)
+        if v and time.time() - v[0] < 3600:
+            return v[1]
+        try:
+            d = self.ex.klines(sym, "D", 30)
+            closes = d["close"].astype(float)
+            if len(closes) < 22:
+                return None
+            sma = float(closes.iloc[-21:-1].mean())
+        except Exception as e:  # noqa: BLE001
+            log.debug("sma20d %s: %s", sym, e)
+            return None
+        c[sym] = (time.time(), sma)
+        return sma
+
+    def _last_hour_close(self, sym):
+        try:
+            d = self.ex.klines(sym, "60", 3)
+            return float(d["close"].iloc[-2]) if len(d) >= 2 else None   # последняя закрытая часовая свеча
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _trend4h_agrees(self, sym, long):
+        try:
+            d = self.ex.klines(sym, "240", 80)
+            c = d["close"].astype(float)
+            e20, e50 = c.ewm(span=20, adjust=False).mean().iloc[-1], c.ewm(span=50, adjust=False).mean().iloc[-1]
+            last = float(c.iloc[-1])
+            return (last > e20 > e50) if long else (last < e20 < e50)
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _pyramid(self, t, pos, part, long, mark):
+        """Добор части позиции по рынку; стоп у брокера переставляется на весь объём; журнал: средний вход и объём."""
+        sym = t["symbol"]
+        if not self._trend4h_agrees(sym, long):
+            return
+        try:
+            add_qty = float(self.ex.fmt_qty(sym, (t.get("qty_init") or t["qty"]) * part))
+        except Exception:  # noqa: BLE001
+            add_qty = 0.0
+        self.j._run("UPDATE trades SET add_ts=? WHERE id=?", (int(time.time()), t["id"]))   # одна попытка на сделку
+        if add_qty <= 0:
+            log.info("%s: добор меньше лота, пропускаю", sym)
+            return
+        try:
+            self.ex.place_market(sym, t["side"], add_qty)
+            time.sleep(2)
+            p2 = [p for p in self.ex.positions() if p["symbol"] == sym]
+            qty_total = float(p2[0]["qty"]) if p2 else float(t["qty"]) + add_qty
+            entry_avg = float(p2[0]["entry"]) if p2 else (t["entry"] * t["qty"] + mark * add_qty) / qty_total
+            self.j.update_add(t["id"], qty_total, entry_avg, add_qty, mark)
+            t["qty"], t["entry"], t["add_qty"], t["add_entry"] = qty_total, entry_avg, add_qty, mark
+            try:
+                self.ex.set_stop_loss(sym, t["stop"])   # стоп-заявка на весь новый объём
+            except Exception as e:  # noqa: BLE001
+                log.warning("%s: стоп после добора не переставлен: %s", sym, e)
+            log.info("%s: добор %g по %g, объём %g, средний вход %g", sym, add_qty, mark, qty_total, entry_avg)
+            self.tg.send("\n\n".join([
+                f"➕ <b>ДОБОР</b>: {fmt.esc(fmt.label(sym))} {'ЛОНГ' if long else 'ШОРТ'}",
+                fmt.block("Почему", f"Сделка в плюсе {((mark - float(t.get('entry_init') or t['entry'])) if long else (float(t.get('entry_init') or t['entry']) - mark)) / abs(float(t.get('entry_init') or t['entry']) - t['stop_init']):.2f}R, тренд 4ч подтверждён"),
+                fmt.block("Что сделал", f"Добрал {add_qty:g} по {mark:g}; объём {qty_total:g}, средний вход {entry_avg:g}, стоп {t['stop']:g} на весь объём"),
+            ]), html=True)
+        except Exception as e:  # noqa: BLE001
+            log.warning("%s: добор не удался: %s", sym, e)
 
     def _move_stop(self, t, new_stop, why):
         long = t["side"] == "Buy"
@@ -469,7 +559,7 @@ class Executor:
         else:
             pnl, exit_price, fees = res
         self.j.close_trade(t["id"], exit_price, pnl, reason, fees)
-        risk = abs(t["entry"] - t["stop_init"]) * (t.get("qty_init") or t["qty"]) * (t.get("mult") or 1.0)
+        risk = abs(float(t.get("entry_init") or t["entry"]) - t["stop_init"]) * (t.get("qty_init") or t["qty"]) * (t.get("mult") or 1.0)
         pnl_r = pnl / risk if risk > 0 else 0
         try:
             tradable = self.risk.tradable(self.ex.equity()[0])

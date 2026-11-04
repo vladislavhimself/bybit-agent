@@ -227,7 +227,7 @@ class RiskManager:
             return False, f"суммарная экспозиция {exposure / t:.1f}x >= лимита"
         return True, ""
 
-    def size(self, symbol, equity, price, stop, tier, positions):
+    def size(self, symbol, equity, price, stop, tier, positions, risk_cap=None):
         """Вернуть (qty, leverage) или (None, причина). Размер считается от торгового капитала."""
         r = self.s.get("risk")
         inst = self.ex.instruments()[symbol]
@@ -235,6 +235,8 @@ class RiskManager:
         if t <= 0:
             return None, "торговый капитал исчерпан, резерв не трогаем"
         risk_amt = t * r["risk_per_trade_pct"][tier] / 100
+        if risk_cap is not None:
+            risk_amt = min(risk_amt, max(0.0, risk_cap))   # равный риск на сектор: остаток лимита сектора
         if datetime.now(timezone.utc).weekday() >= 5:
             risk_amt *= r.get("weekend_risk_mult", 1.0)
         dist = abs(price - stop)

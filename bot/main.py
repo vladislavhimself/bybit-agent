@@ -422,7 +422,12 @@ class Bot:
                 self.tg.send(fmt.entry_message(sig, ta["close"], qty, lev, stop, plan, r["risk_per_trade_pct"][sig.tier],
                                                dist * qty, self.risk.tradable(equity), equity, ta, dry=True), html=True)
                 continue
-            tid = self.exe.open(sig, ta, equity, positions)
+            risk_cap = self._sector_risk_cap(sig, open_trades, equity)
+            if risk_cap is not None and risk_cap <= 0:
+                log.info("%s: лимит риска на сектор исчерпан", sig.symbol)
+                self._shadow_from_signal(sig, ta, "limit_sector_risk")
+                continue
+            tid = self.exe.open(sig, ta, equity, positions, risk_cap=risk_cap)
             if tid:
                 dirs_done.add(sig.direction)
                 opened += 1
@@ -647,6 +652,30 @@ class Bot:
 
     # ---------- цикл ----------
     # ---------- ворота перед входом: тренд рынка, свежесть новости, режим наблюдения ----------
+    def _sector_risk_cap(self, sig, open_trades, equity):
+        """Равный риск на сектор: суммарный риск открытых сделок сектора (вход−стоп × объём) не больше
+        risk.max_sector_risk_pct капитала; новая сделка получает остаток. None = без ограничения."""
+        r = self.s.get("risk") or {}
+        pct = float(r.get("max_sector_risk_pct") or 0)
+        sectors = r.get("sectors") or {}
+        if not pct or not sectors:
+            return None
+        base = self.risk.base_of(sig.symbol)
+        sec = next((k for k, v in sectors.items() if base in v), None)
+        if not sec:
+            return None
+        inst = self.ex.instruments()
+        used = 0.0
+        for x in open_trades:
+            if self.risk.base_of(x["symbol"]) in sectors[sec]:
+                mult = float(inst.get(x["symbol"], {}).get("mult") or 1.0)
+                used += abs(float(x.get("entry_init") or x.get("entry") or 0) - float(x.get("stop_init") or x.get("stop") or 0)) * float(x.get("qty_init") or x.get("qty") or 0) * mult
+        cap = self.risk.tradable(equity) * pct / 100
+        left = cap - used
+        if left < 0.25 * cap:
+            return 0.0
+        return left
+
     def _breadth_adjust(self, sig, symbols):
         """Ширина рынка как размер: доля бумаг в дневном тренде в сторону сделки ≥ 50% — размер на ступень больше,
         большинство против — на ступень меньше. 7 лет поверх ворот индекса: при согласии PF 1.60 против 1.44."""
