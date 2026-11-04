@@ -212,9 +212,14 @@ class MoexExchange:
                 try:
                     md = self.http.get(url, timeout=8).json()["marketdata"]
                     cols = md["columns"]
+                    # VALTODAY — оборот с начала дня: в 13:00 он вдвое меньше дневного, и половина бумаг не проходила
+                    # порог. Приводим к полному дню по доле прошедшей сессии (10:00–23:50 МСК).
+                    msk = datetime.now(timezone.utc) + timedelta(hours=3)
+                    frac = (msk.hour * 60 + msk.minute - 600) / (23 * 60 + 50 - 600)
+                    scale = 1.0 / min(1.0, max(0.15, frac)) if 0 < frac < 1 else 1.0
                     for row in md["data"]:
                         d = dict(zip(cols, row))
-                        out[d["SECID"]] = float(d.get("VALTODAY") or 0)
+                        out[d["SECID"]] = float(d.get("VALTODAY") or 0) * scale
                 except Exception as e:  # noqa: BLE001
                     log.warning("ISS оборот недоступен (%s), час считаем по свечам T-Invest", str(e)[:80])
                     self._iss_down_until = now + 3600

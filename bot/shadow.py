@@ -195,6 +195,10 @@ class ShadowBook:
                                           m["mfe"], m["mae"], now)
                 else:
                     self.j.shadow_next_check(row["id"], now + int(c.get("recheck_hours", 3) * 3600))
+            except KeyError as e:
+                # контракт истёк и пропал из списка инструментов: проверить тень уже нельзя, не держим её вечно
+                log.info("Теневая сделка %s: инструмента %s больше нет, пропускаю", row["id"], e)
+                self.j._run("UPDATE shadow SET status='skipped', resolved_ts=? WHERE id=?", (now, row["id"]))
             except Exception as e:  # noqa: BLE001
                 log.warning("Теневая сделка %s: %s", row["id"], e)
                 self.j.shadow_next_check(row["id"], now + 1800)
