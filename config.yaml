@@ -271,6 +271,7 @@ markets:
         transport: [AFLT, NMTP, FLOT, FESH]
         telecom_energy: [MTSS, RTKM, IRAO, HYDR, FEES, UPRO, MSNG, PHOR, AKRN]
       news_min_hold_hours: 24           # архив новостей: плюс у бычьих новостей по бумаге набирается к суткам (+0.33%), не к 4 ч (+0.14%)
+      stall_hours: 24                   # 7 лет: 12 ч -> +265R, 24 ч -> +296R (лучше в 6 из 7 лет); выходы на +0.15R съедала комиссия
     signals:
       use_playbook: false               # статистика по BTC к акциям не относится
       trend_gate: true                  # лонги только при растущем индексе и дневном тренде вверх; в падении только шорты

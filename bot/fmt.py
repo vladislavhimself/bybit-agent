@@ -123,11 +123,14 @@ def close_message(t, pnl, pnl_r, reason, tradable=None, fees=None):
     base = base_of(t["symbol"])
     side = "ЛОНГ" if t["side"] == "Buy" else "ШОРТ"
     emoji = "✅" if pnl > 0 else "❌"
+    be_note = ""
+    if t.get("stop_init") and t.get("stop") and abs(float(t["stop"]) - float(t["stop_init"])) > 1e-9 and "стоп" in reason:
+        be_note = f" Стоп был переставлен с {float(t['stop_init']):g} на {float(t['stop']):g}, итог сделки после переноса указан выше."
     fee_txt = f"с учётом комиссии {money(fees, 2)} {CUR}" if fees else "с учётом комиссии"
     parts = [
         f"{emoji} ВЫХОД: <b>{esc(label(t['symbol']))} {side}</b>",
         block("Результат", f"{signed(pnl)} {CUR} ({pnl_r:+.2f}R), {fee_txt}"),
-        block("Причина", esc(reason)),
+        block("Причина", esc(reason + be_note)),
     ]
     if tradable is not None:
         parts.append(block("Торговый капитал", f"{money(tradable)} {CUR}"))

@@ -459,8 +459,13 @@ class Executor:
         res = self._exchange_result(t)
         fees = None
         if res is None:
-            pnl, exit_price = 0.0, t["entry"]
-            reason = reason + " (результат не получен с биржи, уточню позже)"
+            # биржа ещё не отдала сделку закрытия: считаем по цене стопа (после безубытка это и есть итог),
+            # а точную цифру дошлём, когда брокер ответит — без «+0, уточню позже»
+            long = t["side"] == "Buy"
+            exit_price = float(t.get("stop") or t["entry"])
+            mult = float(t.get("mult") or 1.0)
+            pnl = (exit_price - t["entry"]) * float(t["qty"]) * mult * (1 if long else -1) - float(t.get("fees") or 0)
+            reason = reason + f" (результат по цене стопа {exit_price:g}, точную цифру уточню по данным брокера)"
         else:
             pnl, exit_price, fees = res
         self.j.close_trade(t["id"], exit_price, pnl, reason, fees)

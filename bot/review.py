@@ -7,6 +7,7 @@ from typing import List
 import anthropic
 from pydantic import BaseModel
 
+from . import fmt
 from .config import TUNABLE_BOUNDS
 
 log = logging.getLogger("review")
@@ -120,10 +121,16 @@ class Reviewer:
             self.j.kv_set("last_shadow_review_ts", int(time.time()))
         if not apply and rv.param_changes:
             self.j.kv_set("pending_changes", [c.model_dump() for c in rv.param_changes])
-        text = (f"🧠 Разбор: реальных сделок {len(trades)}, теневых {sh_new}\n" + rv.summary + "\n\nУроки:\n" + "\n".join("• " + l for l in rv.lessons)
-                + ("\n\nПараметры:\n" + "\n".join(lines) if lines else "")
-                + ("" if apply or not rv.param_changes else "\n\nПрименить: /approve"))
-        self.tg.send(text, html=True)
+        parts = ["🧠 <b>РАЗБОР СДЕЛОК</b>",
+                 fmt.block("Материал", f"Реальных сделок {len(trades)}, теневых {sh_new}"),
+                 fmt.block("Выводы", fmt.esc(rv.summary))]
+        if rv.lessons:
+            parts.append(fmt.block("Уроки", *["• " + fmt.esc(l) for l in rv.lessons]))
+        if lines:
+            parts.append(fmt.block("Параметры", *[fmt.esc(x) for x in lines]))
+        if not apply and rv.param_changes:
+            parts.append(fmt.block("Применить", "/approve"))
+        self.tg.send("\n\n".join(parts), html=True)
         return rv
 
     def apply_pending(self):

@@ -139,6 +139,7 @@ def simulate(f, i, sg, stop_mult=2.0, tps=((1.5, 0.25), (2.5, 0.35)), be_r=0.7, 
     R = stop_mult * a
     stop = entry - sg * R
     qty, realized, mfe, mfe_bar = 1.0, 0.0, 0.0, start
+    exit_bar = None
     tp_state = [[lvl, part, False] for lvl, part in tps]
     end = min(n, start + max_h)
     for j in range(start, end):
@@ -146,6 +147,7 @@ def simulate(f, i, sg, stop_mult=2.0, tps=((1.5, 0.25), (2.5, 0.35)), be_r=0.7, 
             ex = stop * (1 - sg * SLIP)
             realized += qty * sg * (ex - entry) / R - qty * FEE * ex / R
             qty = 0
+            exit_bar = j
             break
         fav = hi[j] if sg > 0 else lo[j]
         for tp in tp_state:
@@ -163,6 +165,7 @@ def simulate(f, i, sg, stop_mult=2.0, tps=((1.5, 0.25), (2.5, 0.35)), be_r=0.7, 
             ex = cl[j] * (1 - sg * SLIP)
             realized += qty * sg * (ex - entry) / R - qty * FEE * ex / R
             qty = 0
+            exit_bar = j
             break
         if be_r and mfe >= be_r:
             be = entry * (1 + sg * 0.0015)
@@ -182,11 +185,14 @@ def simulate(f, i, sg, stop_mult=2.0, tps=((1.5, 0.25), (2.5, 0.35)), be_r=0.7, 
             lad = entry + sg * (int(r_now) - 1 + 0.2) * R
             stop = max(stop, lad) if sg > 0 else min(stop, lad)
         if qty <= 1e-9:
+            exit_bar = j
             break
     if qty > 1e-9:
         ex = cl[end - 1]
         realized += qty * sg * (ex - entry) / R - qty * FEE * ex / R
-    return realized - FEE * entry / R, start, end
+    if exit_bar is None:
+        exit_bar = end - 1
+    return realized - FEE * entry / R, start, exit_bar + 1
 
 
 def run(feats, gates=None, **exit_kw):

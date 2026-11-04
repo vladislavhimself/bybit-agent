@@ -146,7 +146,7 @@ class Journal:
 
     def unreconciled(self, hours=48):
         """Закрытые сделки, у которых результат не удалось получить с биржи."""
-        return self._run("SELECT * FROM trades WHERE status='closed' AND closed_ts>=? AND close_reason LIKE '%не получен%'",
+        return self._run("SELECT * FROM trades WHERE status='closed' AND closed_ts>=? AND close_reason LIKE '%уточню%'",
                          (int(time.time()) - hours * 3600,), "all")
 
     def open_trades(self):
