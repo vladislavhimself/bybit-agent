@@ -126,7 +126,7 @@ def load(hist_dir, symbols, days):
 
 
 def simulate(f, i, sg, stop_mult=2.0, tps=((1.5, 0.25), (2.5, 0.35)), be_r=0.7, tiers=((1.5, 1.5), (3.0, 1.0), (5.0, 0.6)),
-              stall_h=12, trail_after=1.0, max_h=96, pull=0.5, wait=2, gb_r=0.0, gb_min=0.0, pyramid=0.0, pyr_r=1.5, daily_exit=False, max_h_daily=720):
+              stall_h=12, trail_after=1.0, max_h=96, pull=0.5, wait=2, gb_r=0.0, gb_min=0.0, pyramid=0.0, pyr_r=1.5, daily_exit=False, max_h_daily=720, peak_lock=None, pyr_be=False):
     """Как ms.simulate, плюс пирамидинг и выход по дневному тренду. Результат в R от первоначального риска."""
     o, hi, lo, cl = f.open.values, f.high.values, f.low.values, f.close.values
     sma = f.sma20d.values if "sma20d" in f.columns else None
@@ -177,6 +177,10 @@ def simulate(f, i, sg, stop_mult=2.0, tps=((1.5, 0.25), (2.5, 0.35)), be_r=0.7, 
             added = True
             add_qty, add_entry = pyramid, add_px
             realized -= add_qty * FEE * add_px / R
+            if pyr_be:
+                # общий безубыток: средний вход оставшейся части и добора
+                avg = (entry * qty + add_px * add_qty) / (qty + add_qty)
+                stop = max(stop, avg) if sg > 0 else min(stop, avg)
         if daily_exit and sma is not None and not np.isnan(sma[j]):
             # дневной тренд сломан: закрытие часа по другую сторону 20-дневной средней после того, как сделка была в плюсе
             if hours >= 24 and ((sg > 0 and cl[j] < sma[j]) or (sg < 0 and cl[j] > sma[j])):
@@ -208,6 +212,9 @@ def simulate(f, i, sg, stop_mult=2.0, tps=((1.5, 0.25), (2.5, 0.35)), be_r=0.7, 
             if gb_now is not None:
                 gb = entry + sg * (mfe - gb_now) * R
                 stop = max(stop, gb) if sg > 0 else min(stop, gb)
+        if daily_exit and peak_lock and mfe >= peak_lock[0]:
+            pl = entry + sg * (mfe * peak_lock[1]) * R
+            stop = max(stop, pl) if sg > 0 else min(stop, pl)
         if trail_after and r_now >= trail_after and not daily_exit:
             lad = entry + sg * (int(r_now) - 1 + 0.2) * R
             stop = max(stop, lad) if sg > 0 else min(stop, lad)

@@ -21,6 +21,8 @@ class Executor:
         plan, used = [], Decimal("0")
         for lvl in self.s.get("risk.tp_levels") or []:
             part_qty = Decimal(self.ex.fmt_qty(symbol, qty * lvl["part"]))
+            if part_qty < inst["min_qty"] and Decimal(str(qty)) >= 2 * Decimal(str(inst["min_qty"])):
+                part_qty = Decimal(str(inst["min_qty"]))   # целые лоты: доля меньше лота округляется до одного, а не до нуля
             if part_qty < inst["min_qty"] or part_qty <= 0:
                 continue
             price = entry + dist * lvl["r"] * (1 if long else -1)
@@ -341,7 +343,12 @@ class Executor:
             # чем выше забрались, тем короче поводок (7 лет Мосбиржи: 1.5R до 3R, 1.0R с 3R, 0.6R с 5R даёт +12% к итогу,
             # жёсткая защита 0.6R режет треть прибыли, «держать до конца» = как сейчас)
             if getattr(self, "driver", None):
-                self.driver.maybe_check(t, r_now, mfe, mark, risk_dist, hours)   # пока только тени: вердикт записывается, не применяется
+                v = self.driver.maybe_check(t, r_now, mfe, mark, risk_dist, hours)
+                dc = r.get("driver_check") or {}
+                if (v is not None and dc.get("mode") == "tighten" and v.verdict in ("tighten", "take")
+                        and float(v.confidence) >= float(dc.get("min_confidence", 0.6)) and r_now >= 0.5):
+                    lock = e0 + r_now * float(dc.get("keep", 0.5)) * risk_dist * (1 if long else -1)
+                    self._move_stop(t, lock, f"драйвер выдыхается ({v.verdict}, уверенность {float(v.confidence):.2f}): держу половину текущей прибыли")
             gb_r, gb_min = r.get("giveback_r", 0.6), r.get("giveback_min_peak_r", 0.8)
             for pk, gb in (r.get("giveback_tiers") or []):
                 if mfe >= pk:
@@ -358,6 +365,14 @@ class Executor:
                 closed.append(t)
                 continue
 
+            # дневной режим: после пика min_peak_r стоп держит долю пика (7 лет: +419R, плюс в каждом году; без защиты −14R в 2025)
+            if daily_mode:
+                plk = r.get("daily_peak_lock") or {}
+                if plk and mfe >= float(plk.get("min_peak_r", 3.0)):
+                    keep = float(plk.get("keep", 0.5))
+                    lock = e0 + mfe * keep * risk_dist * (1 if long else -1)
+                    self._move_stop(t, lock, f"защита прибыли: держу {keep * 100:.0f}% от пика {mfe:.2f}R")
+            self._refresh_tps(t, pos, long)
             # безубыток, как только прибыль достигла breakeven_r
             if r_now >= r.get("breakeven_r", 0.7):
                 be = e0 * (1 + 0.0015 * (1 if long else -1))
@@ -371,6 +386,51 @@ class Executor:
                 new_stop = max(ladder, from_peak) if long else min(ladder, from_peak)
                 self._move_stop(t, new_stop, f"трейлинг R={r_now:.2f}, пик {mfe:.2f}R")
         return closed
+
+    def _refresh_tps(self, t, pos, long):
+        """Лимитные заявки у брокера живут до конца торгового дня: тейк, выставленный вечером, ночью сгорает.
+        Раз в 15 минут проверяем, что неисполненные тейки стоят у брокера, и перевыставляем пропавшие."""
+        plan = t.get("tp_plan") or []
+        hits = int(t.get("tp_hits") or 0)
+        if not isinstance(plan, list) or len(plan) <= hits:
+            return
+        chk = getattr(self, "_tp_checked", None)
+        if chk is None:
+            chk = self._tp_checked = {}
+        if time.time() - chk.get(t["id"], 0) < 900:
+            return
+        if pos["qty"] < t["qty"] - 1e-9:
+            return   # объём у брокера и в журнале ещё не сошёлся (исполнение или добор в этом цикле): проверим в следующем
+        chk[t["id"]] = time.time()
+        sym = t["symbol"]
+        try:
+            active = {o.get("orderId") for o in self.ex.open_orders(sym)}
+        except Exception:  # noqa: BLE001
+            return
+        limits = None
+        if hasattr(self.ex, "price_limits"):
+            try:
+                limits = self.ex.price_limits(sym)
+            except Exception:  # noqa: BLE001
+                limits = None
+        changed = False
+        close_side = "Sell" if long else "Buy"
+        for lvl in plan[hits:]:
+            if lvl.get("order_id") and lvl["order_id"] in active:
+                continue
+            price = lvl["price"]
+            if limits:
+                lo, hi = limits
+                tick = float(self.ex.instruments()[sym]["tick"])
+                price = min(price, hi - tick) if long else max(price, lo + tick)
+            try:
+                lvl["order_id"] = self.ex.place_limit(sym, close_side, lvl["qty"], price)
+                changed = True
+                log.info("%s: тейк %.2fR перевыставлен по %g (заявка сгорела с прошлой сессии)", sym, lvl["r"], price)
+            except Exception as e:  # noqa: BLE001
+                log.debug("%s: тейк %.2fR не перевыставлен: %s", sym, lvl["r"], e)
+        if changed:
+            self.j.update_tp_plan(t["id"], plan)
 
     def _sma20d(self, sym):
         """20-дневная средняя по завершённым дням (сегодняшний день не считаем), кеш час."""
@@ -437,10 +497,21 @@ class Executor:
             entry_avg = float(p2[0]["entry"]) if p2 else (t["entry"] * t["qty"] + mark * add_qty) / qty_total
             self.j.update_add(t["id"], qty_total, entry_avg, add_qty, mark)
             t["qty"], t["entry"], t["add_qty"], t["add_entry"] = qty_total, entry_avg, add_qty, mark
-            try:
-                self.ex.set_stop_loss(sym, t["stop"])   # стоп-заявка на весь новый объём
-            except Exception as e:  # noqa: BLE001
-                log.warning("%s: стоп после добора не переставлен: %s", sym, e)
+            moved = False
+            if self.s.get("risk.pyramid_stop_breakeven", True):
+                # 05.11 Газпром: добор по 109.66 при стопе 111.28 (безубыток первых трёх) превратил ноль в −156.
+                # Стоп должен защищать всю позицию: общий безубыток по среднему входу
+                be_all = entry_avg * (1 + 0.0015 * (1 if long else -1))
+                better = (be_all > t["stop"]) if long else (be_all < t["stop"])
+                if better:
+                    self._move_stop(t, be_all, "общий безубыток после добора")
+                    t["stop"] = be_all
+                    moved = True
+            if not moved:
+                try:
+                    self.ex.set_stop_loss(sym, t["stop"])   # стоп-заявка на весь новый объём
+                except Exception as e:  # noqa: BLE001
+                    log.warning("%s: стоп после добора не переставлен: %s", sym, e)
             log.info("%s: добор %g по %g, объём %g, средний вход %g", sym, add_qty, mark, qty_total, entry_avg)
             self.tg.send("\n\n".join([
                 f"➕ <b>ДОБОР</b>: {fmt.esc(fmt.label(sym))} {'ЛОНГ' if long else 'ШОРТ'}",
@@ -606,9 +677,9 @@ class Executor:
                 stop = entry - dist if long else entry + dist
                 tid = self.j.open_trade({"symbol": sym, "side": p["side"], "qty": float(p["qty"]), "entry": entry, "stop": stop, "tp": 0.0,
                                          "stop_init": stop, "tier": "low", "score": 0.0, "confidence": 0.0,
-                                         "reasons": json.dumps(["позиция у брокера без записи в журнале: взята под управление при сверке"], ensure_ascii=False),
+                                         "reasons": ["позиция у брокера без записи в журнале: взята под управление при сверке"],
                                          "regime": "", "atr": atr, "leverage": 1.0, "opened_ts": int(now), "status": "open", "order_id": "",
-                                         "news_driven": 0, "qty_init": float(p["qty"]), "tp_plan": "[]", "tp_hits": 0, "event_key": "",
+                                         "news_driven": 0, "qty_init": float(p["qty"]), "tp_plan": [], "tp_hits": 0, "event_key": "",
                                          "mult": float(inst["mult"]), "fees": 0.0})
                 self.j._run("UPDATE trades SET entry_init=entry WHERE id=?", (tid,))
                 try:

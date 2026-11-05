@@ -205,6 +205,9 @@ class Journal:
     def update_mfe(self, trade_id, mfe_r):
         self._run("UPDATE trades SET mfe_r=?, mfe_ts=? WHERE id=?", (mfe_r, int(time.time()), trade_id))
 
+    def update_tp_plan(self, trade_id, plan):
+        self._run("UPDATE trades SET tp_plan=? WHERE id=?", (json.dumps(plan, ensure_ascii=False), trade_id))
+
     def update_partial(self, trade_id, qty, tp_hits):
         self._run("UPDATE trades SET qty=?, tp_hits=? WHERE id=?", (qty, tp_hits, trade_id))
 

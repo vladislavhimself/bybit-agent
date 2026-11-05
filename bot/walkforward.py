@@ -96,6 +96,14 @@ class WalkForward:
         exits = dict(stop_mult=p["risk.stop_atr_mult"], be_r=p["risk.breakeven_r"], max_h=int(p["risk.max_hours_in_trade"]), tiers=tiers,
                      stall_h=int(p.get("risk.stall_hours", 12)), daily_exit=bool(p.get("risk.daily_trend_exit", 0)),
                      pyramid=float(p.get("risk.pyramid_part", 0) or 0))
+        # то, что перерасчёт не подбирает, берётся из настроек бота, чтобы симулятор считал ту же логику
+        tpl = self.s.get("risk.tp_levels")
+        if tpl is not None:
+            exits["tps"] = tuple((float(x["r"]), float(x["part"])) for x in tpl)
+        plk = self.s.get("risk.daily_peak_lock") or {}
+        if plk:
+            exits["peak_lock"] = (float(plk.get("min_peak_r", 3.0)), float(plk.get("keep", 0.5)))
+        exits["pyr_be"] = bool(self.s.get("risk.pyramid_stop_breakeven", True))
         return gates, exits
 
     def current_params(self):
