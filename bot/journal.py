@@ -62,7 +62,7 @@ class Journal:
             for col, typ in (("event_key", "TEXT DEFAULT ''"), ("mfe_r", "REAL DEFAULT 0"), ("mfe_ts", "INTEGER DEFAULT 0"),
                              ("mult", "REAL DEFAULT 1"), ("fees", "REAL DEFAULT 0"),
                              ("entry_init", "REAL DEFAULT 0"), ("add_qty", "REAL DEFAULT 0"), ("add_entry", "REAL DEFAULT 0"),
-                             ("add_ts", "INTEGER DEFAULT 0")):
+                             ("add_ts", "INTEGER DEFAULT 0"), ("cut_qty", "REAL DEFAULT 0"), ("cut_ts", "INTEGER DEFAULT 0")):
                 try:
                     self.db.execute(f"ALTER TABLE trades ADD COLUMN {col} {typ}")
                 except sqlite3.OperationalError:
@@ -201,6 +201,10 @@ class Journal:
         """Пирамидинг: позиция стала больше, средний вход сместился; первоначальный вход хранится в entry_init."""
         self._run("UPDATE trades SET qty=?, entry=?, add_qty=?, add_entry=?, add_ts=? WHERE id=?",
                   (qty_total, entry_avg, add_qty, add_entry, int(time.time()), trade_id))
+
+    def update_cut(self, trade_id, qty_left, cut_qty):
+        """Часть позиции закрыта по вердикту наблюдателя: объём уменьшился, закрытая часть хранится отдельно от тейков."""
+        self._run("UPDATE trades SET qty=?, cut_qty=?, cut_ts=? WHERE id=?", (qty_left, cut_qty, int(time.time()), trade_id))
 
     def update_mfe(self, trade_id, mfe_r):
         self._run("UPDATE trades SET mfe_r=?, mfe_ts=? WHERE id=?", (mfe_r, int(time.time()), trade_id))

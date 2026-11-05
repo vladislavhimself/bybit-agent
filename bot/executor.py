@@ -282,7 +282,7 @@ class Executor:
             # частичные тейки: позиция уменьшилась
             if pos["qty"] < t["qty"] - 1e-12:
                 hits = t["tp_hits"] or 0
-                taken = (t["qty_init"] or t["qty"]) + float(t.get("add_qty") or 0) - pos["qty"]
+                taken = (t["qty_init"] or t["qty"]) + float(t.get("add_qty") or 0) - float(t.get("cut_qty") or 0) - pos["qty"]
                 acc, new_hits = 0.0, 0
                 for lvl in t["tp_plan"]:
                     acc += lvl["qty"]
@@ -347,6 +347,10 @@ class Executor:
                 dc = r.get("driver_check") or {}
                 if (v is not None and dc.get("mode") == "tighten" and v.verdict in ("tighten", "take")
                         and float(v.confidence) >= float(dc.get("min_confidence", 0.6)) and r_now >= 0.5):
+                    part = float(dc.get("take_part") or 0)
+                    if (part and v.verdict == "take" and float(v.confidence) >= float(dc.get("take_min_confidence", 0.8))
+                            and not (t.get("cut_qty") or 0)):
+                        self._cut_part(t, pos, part, long, mark, r_now, v)
                     lock = e0 + r_now * float(dc.get("keep", 0.5)) * risk_dist * (1 if long else -1)
                     self._move_stop(t, lock, f"драйвер выдыхается ({v.verdict}, уверенность {float(v.confidence):.2f}): держу половину текущей прибыли")
             gb_r, gb_min = r.get("giveback_r", 0.6), r.get("giveback_min_peak_r", 0.8)
@@ -520,6 +524,48 @@ class Executor:
             ]), html=True)
         except Exception as e:  # noqa: BLE001
             log.warning("%s: добор не удался: %s", sym, e)
+
+    def _cut_part(self, t, pos, part, long, mark, r_now, v):
+        """Наблюдатель сказал «забрать» с высокой уверенностью: закрываем часть позиции по рынку, остаток ведём дальше.
+        Один раз на сделку. Позицию в один лот не делим. Стоп-заявка у брокера перевыставляется на новый объём."""
+        sym = t["symbol"]
+        inst = self.ex.instruments().get(sym) or {}
+        min_qty = float(inst.get("min_qty") or 0)
+        plan = t.get("tp_plan") if isinstance(t.get("tp_plan"), list) else []
+        pend = sum(float(lvl["qty"]) for lvl in plan[int(t.get("tp_hits") or 0):])   # лимитные тейки, которые ещё стоят у брокера
+        qty_now = float(pos["qty"])
+        try:
+            cut = float(self.ex.fmt_qty(sym, qty_now * part))
+            if qty_now - cut < pend:   # остаток не должен стать меньше объёма стоящих тейков
+                cut = float(self.ex.fmt_qty(sym, qty_now - pend))
+        except Exception:  # noqa: BLE001
+            cut = 0.0
+        if cut <= 0 or cut < min_qty or qty_now - cut <= 0:
+            log.info("%s: «забрать» от наблюдателя, но позицию %g не разделить: только подтягиваю стоп", sym, qty_now)
+            return False
+        try:
+            self.ex.place_market(sym, "Sell" if long else "Buy", cut, reduce_only=True)
+            time.sleep(2)
+            p2 = [p for p in self.ex.positions() if p["symbol"] == sym]
+        except Exception as e:  # noqa: BLE001
+            log.warning("%s: частичное закрытие по вердикту наблюдателя не удалось: %s", sym, e)
+            return False
+        left = float(p2[0]["qty"]) if p2 else qty_now - cut
+        self.j.update_cut(t["id"], left, cut)
+        t["qty"], t["cut_qty"], pos["qty"] = left, cut, left
+        cur = self.j._run("SELECT stop FROM trades WHERE id=?", (t["id"],), "one")["stop"]
+        try:
+            self.ex.set_stop_loss(sym, cur)   # стоп-заявка на прежний объём после сокращения закрыла бы больше, чем осталось
+        except Exception as e:  # noqa: BLE001
+            log.warning("%s: стоп после частичного закрытия не переставлен: %s", sym, e)
+        log.info("%s: закрыто %g из %g по вердикту наблюдателя (take %.2f) при %.2fR, остаток %g", sym, cut, qty_now, float(v.confidence), r_now, left)
+        self.tg.send("\n\n".join([
+            f"✂️ <b>ЧАСТЬ ПРИБЫЛИ ЗАБРАНА</b>: {fmt.esc(fmt.label(sym))} {'ЛОНГ' if long else 'ШОРТ'}",
+            fmt.block("Почему", f"Наблюдатель за драйвером: движение сломано (уверенность {float(v.confidence):.2f})", fmt.esc(str(v.reasoning)[:220])),
+            fmt.block("Что сделал", f"Закрыл {cut:g} из {qty_now:g} по рынку около {mark:g} при {r_now:+.2f}R",
+                      f"Остаток {left:g} веду дальше, стоп подтягиваю на половину текущей прибыли"),
+        ]), html=True)
+        return True
 
     def _move_stop(self, t, new_stop, why):
         long = t["side"] == "Buy"
