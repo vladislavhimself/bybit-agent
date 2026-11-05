@@ -10,7 +10,7 @@ import sys
 import numpy as np
 import pandas as pd
 
-FEE, SLIP = 0.0004, 0.0005
+FEE, SLIP = 0.00052, 0.0005   # комиссия по журналу песочницы 05.11.2026: 0.0518% на сторону (раньше стояло 0.04%: итог завышался на ~14%)
 
 
 # ---- признаки (копия research/live_rules/bt_entries.py, без зависимости от argv) ----

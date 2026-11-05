@@ -139,7 +139,7 @@ def close_message(t, pnl, pnl_r, reason, tradable=None, fees=None):
 
 
 def balance_message(equity, m, positions, stats, cap, llm=None, next_macro=None, xstream=None, halted_hint=True,
-                    pendings=None, why_none=None, shadow_line=None, now_lines=None):
+                    pendings=None, why_none=None, shadow_line=None, now_lines=None, sandbox_buffer=0):
     parts = ["💼 <b>БАЛАНС</b>"]
     if now_lines:
         parts.append(block("Что делаю сейчас", *[esc(x) for x in now_lines]))
@@ -149,6 +149,9 @@ def balance_message(equity, m, positions, stats, cap, llm=None, next_macro=None,
     else:
         parts.append(block("Торговый капитал", f"{money(m['tradable'])} {CUR}"))
     parts.append(block("Резерв прибыли", f"{money(m['reserve'])} {CUR} | на счёте {money(equity)} {CUR}"))
+    if sandbox_buffer:
+        parts.append(block("Песочница", f"Виртуальное обеспечение {money(sandbox_buffer)} {CUR}: нужно, чтобы помещалось несколько позиций",
+                           "В капитал, прибыль и убыток не входит: все цифры выше посчитаны без него"))
     parts.append(block("Динамика", f"Сегодня {m['day_pct']:+.1f}% | неделя {m['week_pct']:+.1f}% | просадка от пика {m['drawdown_pct']:.1f}%"))
     if m["halted"] and halted_hint:
         parts.append(f"⛔ <b>Остановлен</b>: {esc(m['halt_reason'])}. /resume чтобы продолжить")

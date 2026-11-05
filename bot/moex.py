@@ -62,6 +62,11 @@ class MoexExchange:
         self._figi2sym = {}
         self._turn_cache, self._turn_ts, self._iss_down_until, self._turn_thread = {}, 0.0, 0.0, None
         self._realized, self._realized_ts = 0.0, 0.0
+        # Песочница списывает с денег полную стоимость позиции (ГО не знает): чтобы помещалось несколько позиций, как на
+        # реальном счёте с плечом, добавлено виртуальное обеспечение. Оно вычитается из капитала в balances(): прибыль,
+        # убыток и торговый капитал считаются так, будто его нет. Сумма хранится в файле рядом с номером счёта.
+        self._buffer_file = DATA / f"moex_buffer_{self.mode}.txt"
+        self._buffer = self._buffer_paid()
         self._ensure_account()
         if not net.relay_enabled() and not net.ru_proxy():   # напрямую из-за границы: держим соединение тёплым; через ретранслятор не нужно
             threading.Thread(target=self._keepalive, daemon=True, name="tinvest-keepalive").start()
@@ -110,6 +115,12 @@ class MoexExchange:
             self.account = cache.read_text(encoding="utf-8").strip()
             log.error("T-Invest недоступен при старте (%s), счёт %s из кэша", str(e)[:100], self.account)
 
+    def _buffer_paid(self):
+        try:
+            return float(self._buffer_file.read_text(encoding="utf-8").strip() or 0) if self.mode != "live" and self._buffer_file.exists() else 0.0
+        except (OSError, ValueError):
+            return 0.0
+
     def _ensure_account_online(self):
         if self.mode == "live":
             accs = self.call("UsersService", "GetAccounts").get("accounts", [])
@@ -130,6 +141,14 @@ class MoexExchange:
                 self.call("SandboxService", "SandboxPayIn", {"accountId": self.account,
                                                              "amount": {"currency": "rub", "units": str(int(start)), "nano": 0}})
                 log.info("Песочница пополнена на %.0f руб", start)
+            want = float(self.s.get("moex.sandbox_buffer_rub") or 0)
+            if want > self._buffer:
+                add = want - self._buffer
+                self.call("SandboxService", "SandboxPayIn", {"accountId": self.account,
+                                                             "amount": {"currency": "rub", "units": str(int(add)), "nano": 0}})
+                self._buffer_file.write_text(str(int(want)), encoding="utf-8")
+                self._buffer = want
+                log.warning("Песочница: добавлено виртуальное обеспечение %.0f руб (всего %.0f); в капитал и результат не входит", add, want)
         log.info("T-Invest %s, счёт %s", "песочница" if self.mode != "live" else "БОЕВОЙ", self.account)
 
     # ---------- инструменты ----------
@@ -443,9 +462,11 @@ class MoexExchange:
         # Проверено по операциям песочницы 22.10: деньги = пополнение + платежи по акциям + комиссии + вариационная
         # маржа (списывается при клиринге в 21:00). Платежи по фьючерсам в деньги не попадают, а их стоимость
         # в totalAmountPortfolio — фикция. Поэтому капитал = деньги + акции по рынку + вармаржа открытых фьючерсов.
-        equity = cash + shares + fut_upnl
+        # виртуальное обеспечение песочницы в капитал не входит: вычитаем его, свободные деньги (available) — с ним
+        equity = cash + shares + fut_upnl - self._buffer
         upnl = fut_upnl + shares_upnl
-        return {"equity": equity, "wallet": equity - upnl, "unrealised": upnl, "available": cash, "total_equity": equity}
+        return {"equity": equity, "wallet": equity - upnl, "unrealised": upnl, "available": cash, "total_equity": equity,
+                "buffer": self._buffer}
 
     def _realized_futures(self, portfolio):
         """Песочница: сумма платежей по сделкам с фьючерсами плюс стоимость открытых контрактов по цене входа
@@ -472,12 +493,34 @@ class MoexExchange:
         b = self.balances()
         return b["equity"], b["available"]
 
-    def _stop_orders(self):
+    def _stop_orders(self, strict=False):
+        """strict=True: при ошибке запроса исключение, а не пустой список (пустой список = «стопов нет», и решения по нему опасны)."""
         try:
             return self.call("StopOrdersService", "GetStopOrders", {"accountId": self.account}).get("stopOrders", [])
         except Exception as e:  # noqa: BLE001
+            if strict:
+                raise
             log.debug("stop orders: %s", e)
             return []
+
+    def cancel_stop(self, stop_id):
+        self.call("StopOrdersService", "CancelStopOrder", {"accountId": self.account, "stopOrderId": stop_id})
+
+    def orders_view(self):
+        """Все стоп-заявки и активные заявки счёта для сверки с журналом. Ошибка запроса — исключение."""
+        self.instruments()
+        so = self.call("StopOrdersService", "GetStopOrders", {"accountId": self.account}).get("stopOrders", [])
+        od = self.call("OrdersService", "GetOrders", {"accountId": self.account}).get("orders", [])
+
+        def sym_of(x):
+            return self._figi2sym.get(x.get("figi")) or self._uid2sym.get(x.get("instrumentUid"))
+
+        stops = [{"symbol": sym_of(x), "id": x["stopOrderId"], "qty": float(x.get("lotsRequested") or 0), "price": q2f(x.get("stopPrice")),
+                  "side": "Buy" if "BUY" in (x.get("direction") or "") else "Sell"} for x in so if sym_of(x)]
+        limits = [{"symbol": sym_of(x), "id": x["orderId"], "qty": float(x.get("lotsRequested") or 0) - float(x.get("lotsExecuted") or 0),
+                   "price": q2f(x.get("initialSecurityPrice")), "side": "Buy" if "BUY" in (x.get("direction") or "") else "Sell"}
+                  for x in od if sym_of(x)]
+        return {"stops": stops, "limits": limits}
 
     def positions(self):
         p = self.call("OperationsService", "GetPortfolio", {"accountId": self.account})
@@ -509,6 +552,7 @@ class MoexExchange:
             else:
                 upnl = q2f(x.get("expectedYield")) if x.get("expectedYield") is not None else (mark - entry) * lots * mult
             out.append({"symbol": sym, "side": "Buy" if lots > 0 else "Sell", "qty": abs(lots), "entry": entry, "mark": mark,
+                        "mark_ok": bool(q2f(x.get("currentPrice"))),   # False: брокер не прислал цену, mark = цена входа
                         "upnl": upnl, "mult": mult, "leverage": abs(lots) * mark * mult / eq,
                         "sl": stops.get(sym, 0.0), "tp": 0.0, "liq": 0.0})
         return out
@@ -594,6 +638,12 @@ class MoexExchange:
         except Exception as e:  # noqa: BLE001
             log.debug("cancel_order %s: %s", order_id, e)
 
+    def open_orders_strict(self, symbol):
+        """Как open_orders, но при ошибке запроса исключение: пустой список означал бы «заявок нет», и тейк выставился бы дублем."""
+        it = self.instruments()[symbol]
+        lst = self.call("OrdersService", "GetOrders", {"accountId": self.account}).get("orders", [])
+        return [o for o in lst if o.get("instrumentUid") == it["uid"] or o.get("figi") == it["figi"]]
+
     def open_orders(self, symbol):
         it = self.instruments()[symbol]
         try:
@@ -614,28 +664,53 @@ class MoexExchange:
                     log.debug("cancel stop %s: %s", so["stopOrderId"], e)
 
     def set_stop_loss(self, symbol, sl, side_closing=None):
-        """Стоп-заявка на всю позицию; старая снимается. Для шорта закрывающая сторона Buy."""
+        """Стоп-заявка на всю позицию. Для шорта закрывающая сторона Buy.
+        Сначала ставится новая заявка, потом снимаются старые: если новая не принята, прежняя защита остаётся
+        (раньше старую снимали первой, и при сбое позиция оставалась без стопа). Список старых заявок получаем строго:
+        если брокер его не отдал, ничего не меняем — иначе рядом остались бы две стоп-заявки."""
         it = self.instruments()[symbol]
+        pos = [p for p in self.positions() if p["symbol"] == symbol]
         if side_closing is None:
-            pos = [p for p in self.positions() if p["symbol"] == symbol]
             if not pos:
                 return
             side_closing = "Sell" if pos[0]["side"] == "Buy" else "Buy"
             qty = pos[0]["qty"]
         else:
-            pos = [p for p in self.positions() if p["symbol"] == symbol]
-            qty = pos[0]["qty"] if pos else (self._last_fill or {}).get("lots", 1)
-        for so in self._stop_orders():
-            if so.get("instrumentUid") == it["uid"] or so.get("figi") == it["figi"]:
+            qty = pos[0]["qty"] if pos else (getattr(self, "_last_fill", None) or {}).get("lots", 1)
+        old = [so for so in self._stop_orders(strict=True) if so.get("instrumentUid") == it["uid"] or so.get("figi") == it["figi"]]
+
+        def post(price, lots):
+            self.call("StopOrdersService", "PostStopOrder", {
+                "instrumentId": it["uid"], "quantity": str(int(lots)), "stopPrice": f2q(self.fmt_price(symbol, price)),
+                "direction": "STOP_ORDER_DIRECTION_SELL" if side_closing == "Sell" else "STOP_ORDER_DIRECTION_BUY",
+                "accountId": self.account, "expirationType": "STOP_ORDER_EXPIRATION_TYPE_GOOD_TILL_CANCEL",
+                "stopOrderType": "STOP_ORDER_TYPE_STOP_LOSS"})
+
+        def cancel_old():
+            for so in old:
                 try:
-                    self.call("StopOrdersService", "CancelStopOrder", {"accountId": self.account, "stopOrderId": so["stopOrderId"]})
+                    self.cancel_stop(so["stopOrderId"])
                 except Exception as e:  # noqa: BLE001
-                    log.debug("cancel stop: %s", e)
-        self.call("StopOrdersService", "PostStopOrder", {
-            "instrumentId": it["uid"], "quantity": str(int(qty)), "stopPrice": f2q(self.fmt_price(symbol, sl)),
-            "direction": "STOP_ORDER_DIRECTION_SELL" if side_closing == "Sell" else "STOP_ORDER_DIRECTION_BUY",
-            "accountId": self.account, "expirationType": "STOP_ORDER_EXPIRATION_TYPE_GOOD_TILL_CANCEL",
-            "stopOrderType": "STOP_ORDER_TYPE_STOP_LOSS"})
+                    log.warning("%s: старая стоп-заявка не снята (%s), снимет сверка заявок", symbol, str(e)[:80])
+
+        try:
+            post(sl, qty)
+        except Exception as e1:  # noqa: BLE001
+            if not old:
+                raise
+            # брокер не принял вторую стоп-заявку при живой первой: меняем по-старому, а при неудаче возвращаем прежний уровень
+            log.warning("%s: новая стоп-заявка рядом со старой не принята (%s), меняю через снятие", symbol, str(e1)[:100])
+            cancel_old()
+            try:
+                post(sl, qty)
+            except Exception:
+                try:
+                    post(q2f(old[0].get("stopPrice")), qty)
+                except Exception as e3:  # noqa: BLE001
+                    log.error("%s: стоп-заявка не восстановлена: %s", symbol, str(e3)[:100])
+                raise
+            return
+        cancel_old()
 
     def close_position(self, symbol):
         for p in self.positions():
@@ -644,13 +719,14 @@ class MoexExchange:
                 return self.place_market(symbol, side, p["qty"], reduce_only=True)
         return None
 
-    def closed_pnl(self, symbol=None, start_ms=None, limit=50, entry=None, side=None):
+    def closed_pnl(self, symbol=None, start_ms=None, limit=50, entry=None, side=None, end_ms=None):
         """Результат по инструменту с момента start_ms, в рублях, уже с учётом комиссии.
         Если переданы entry и side сделки: pnl = сумма по закрывающим сделкам (цена − вход) × лоты × шаг − комиссии.
         Иначе (разведка): продажи − покупки − комиссии по платежам брокера за период."""
         start = int(start_ms / 1000) if start_ms else int(time.time()) - 7 * 86400
         r = self.call("OperationsService", "GetOperations", {"accountId": self.account, "from": iso(start),
-                                                              "to": iso(time.time() + 60), "state": "OPERATION_STATE_EXECUTED"})
+                                                              "to": iso(end_ms / 1000 if end_ms else time.time() + 60),
+                                                              "state": "OPERATION_STATE_EXECUTED"})
         closing = "OPERATION_TYPE_SELL" if side == "Buy" else "OPERATION_TYPE_BUY"
         by = {}
         for op in r.get("operations", []):

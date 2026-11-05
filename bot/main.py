@@ -405,7 +405,20 @@ class Bot:
             self.best_weak_since_report = best_weak
         opened = 0
         dirs_done = set()   # одновременные сигналы в одну сторону = одна ставка на рынок: берём только сильнейший
+        if candidates and tag == "скан":
+            # Скан идёт минуты: за это время могли прийти /stop или /panic, сработать дневной лимит убытка или начаться
+            # окно события. Раньше это проверялось только в начале скана, и уже начатый скан открывал сделку после команды.
+            try:
+                equity, _ = self.ex.equity()
+            except Exception:  # noqa: BLE001
+                pass
+            ok, why = self.risk.check(equity)
+            if not ok or (self.eventplay and self.eventplay.blocked()):
+                log.info("скан: входы запрещены (%s), кандидаты пропущены", why if not ok else "до решения ЦБ")
+                return 0
         for sig, ta, tk in candidates:
+            if self.risk.halted:
+                break
             gate = self._gate(sig, ta)
             if gate:
                 log.info("%s %s: %s", sig.symbol, sig.direction, fmt.REASONS_RU.get(gate, gate))
@@ -571,6 +584,7 @@ class Bot:
         self.tg.send(fmt.balance_message(equity, m, positions, self.j.stats(), float(self.s.get("risk.capital_cap_usd") or 0),
                                          llm, self.cal.next_high(), self.xstream.status() if self.xstream else None,
                                          pendings=self.j.pendings(),
+                                         sandbox_buffer=float(getattr(self.ex, "_buffer", 0) or 0),
                                          now_lines=self._now_lines(positions),
                                          shadow_line=self.shadow.summary_text(7, top=3),
                                          why_none=fmt.funnel_text(self.funnel_since_report, self.best_weak_since_report,
@@ -590,9 +604,13 @@ class Bot:
                 self.tg.send(fmt.block("⛔ Стоп", f"Новые входы остановлены, отложенных ордеров снято: {n}. "
                              "Открытые позиции остаются под стопами. /panic закроет всё."), html=True)
             elif c == "/panic":
+                self.risk.halt("ручная остановка (/panic)")   # сначала остановка: ни один вход не должен пройти, пока идёт закрытие
                 n = self.exe.close_all("ручное закрытие (/panic)")
-                self.risk.halt("ручная остановка (/panic)")
-                self.tg.send(fmt.block("⛔ Паника", f"Закрыто позиций: {n}. Бот остановлен. /resume чтобы продолжить."), html=True)
+                wait = getattr(self.exe, "last_deferred", 0)
+                lines = [f"Закрыто позиций и ордеров: {n}. Бот остановлен. /resume чтобы продолжить."]
+                if wait:
+                    lines.append(f"Не закрыто: {wait} — торги по этим бумагам сейчас не идут. Стоп-заявки на месте, закрою при открытии.")
+                self.tg.send(fmt.block("⛔ Паника", *lines), html=True)
             elif c == "/resume":
                 self.risk.resume(equity)
                 self.tg.send(fmt.block("▶️ Возобновлено", "Торговля возобновлена, отсчёт просадки начат заново"), html=True)
@@ -608,7 +626,7 @@ class Bot:
                 if not self.wf:
                     self.tg.send("перерасчёт на истории выключен (learning.walkforward)")
                 elif cmd.strip().endswith("run"):
-                    self.tg.send("⏳ Перерасчёт на истории запущен, это 2–5 минут")
+                    self.tg.send("⏳ Перерасчёт на истории запущен, это 3–10 минут")
                     threading.Thread(target=self.wf.run, kwargs={"apply": True, "notify": True}, daemon=True, name="wf").start()
                 else:
                     self.tg.send(self.wf.text(), html=True)

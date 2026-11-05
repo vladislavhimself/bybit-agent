@@ -7,6 +7,11 @@ HOST="root@177.3.217.105"
 KEY="${1:-$HOME/.ssh/bybit_agent_ed25519}"
 O="-o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o LogLevel=ERROR"
 cd "$(dirname "$0")/.."
+# Перед выкладкой — сценарные тесты на эмуляторе брокера (без сети и без вызовов модели). Не прошли — не выкладываем.
+for t in tests/test_*.py; do
+  python "$t" > /tmp/bot-test.log 2>&1 || { echo "ТЕСТ НЕ ПРОШЁЛ: $t"; tail -15 /tmp/bot-test.log; exit 1; }
+done
+echo "Тесты пройдены: $(ls tests/test_*.py | wc -l) файлов"
 tar --exclude='.git' --exclude='data/history' --exclude='data/*.db' --exclude='data/*.db-journal' --exclude='logs' \
     --exclude='__pycache__' --exclude='data/backtest_trades.csv' --exclude='.env' --exclude='.venv' \
     -czf /tmp/bybit-agent.tgz .

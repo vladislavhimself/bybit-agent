@@ -132,23 +132,39 @@ class WalkForward:
         if len(feats) < 5:
             return f"мало истории: {len(feats)} бумаг"
         split = pd.Timestamp.utcnow().tz_localize(None) - pd.Timedelta(days=oos_days)
-        results = []
         keys = list(GRID)
-        for combo in itertools.product(*[GRID[k] for k in keys]):
-            p = dict(zip(keys, combo))
-            gates, exits = self._params_to_sim(p)
-            t = ms.run(feats, gates, **exits)
-            is_s, oos_s = ms.stats(t[t.t < split]), ms.stats(t[t.t >= split])
-            results.append((p, is_s, oos_s))
+        cache = {}
+
+        def ev(p):
+            key = tuple(float(p[k]) for k in keys)
+            if key not in cache:
+                gates, exits = self._params_to_sim(p)
+                t = ms.run(feats, gates, **exits)
+                cache[key] = (dict(p), ms.stats(t[t.t < split]), ms.stats(t[t.t >= split]))
+                time.sleep(0.2)   # расчёт идёт в процессе бота на одном ядре: между прогонами отдаём время главному циклу
+            return cache[key]
+
+        # Покоординатный подбор от текущих параметров: меняем по одному параметру, принимаем только заметное улучшение,
+        # два прохода (до 25 прогонов, минуты). Полный перебор сетки — 2304 прогона, часы на одном ядре сервера, и чем
+        # больше вариантов сравнивается, тем вероятнее выбрать случайно удачный (подгонка).
         cur = self.current_params()
-        cur_row = next((r for r in results if all(abs(float(r[0][k]) - float(cur[k] or 0)) < 1e-9 for k in keys)), None)
-        if cur_row is None:
-            gates, exits = self._params_to_sim({k: (cur[k] if cur[k] is not None else GRID[k][0]) for k in keys})
-            t = ms.run(feats, gates, **exits)
-            cur_row = ({k: cur[k] for k in keys}, ms.stats(t[t.t < split]), ms.stats(t[t.t >= split]))
+        cur_row = ev({k: (cur[k] if cur[k] is not None else GRID[k][0]) for k in keys})
         min_n = int(c.get("min_is_trades", 150))
-        cands = [r for r in results if r[1]["n"] >= min_n]
-        best = max(cands, key=lambda r: r[1]["score"]) if cands else cur_row
+        min_gain = float(c.get("min_score_gain", 0.1))
+        best = cur_row
+        for _ in range(2):
+            improved = False
+            for k in keys:
+                if bool(best[0]["risk.daily_trend_exit"]) and k in ("risk.max_hours_in_trade", "risk.stall_hours"):
+                    continue   # в дневном режиме эти два параметра на результат не влияют: менять их не на чем
+                for v in GRID[k]:
+                    if abs(float(v) - float(best[0][k])) < 1e-9:
+                        continue
+                    cand = ev(dict(best[0], **{k: v}))
+                    if cand[1]["n"] >= min_n and cand[1]["score"] > best[1]["score"] + min_gain:
+                        best, improved = cand, True
+            if not improved:
+                break
         ok_oos = (best[2]["n"] >= 10 and best[2]["avg_r"] > 0 and best[2]["pf"] >= 1.0
                   and best[2]["avg_r"] >= cur_row[2]["avg_r"] - float(c.get("oos_tolerance_r", 0.03)))
         changes = {k: v for k, v in best[0].items() if cur[k] is None or abs(float(v) - float(cur[k])) > 1e-9}
@@ -159,7 +175,7 @@ class WalkForward:
                 msgs.append(msg)
                 if ok:
                     applied.append(k)
-        report = {"ts": int(time.time()), "symbols": len(feats), "is_days": is_days, "oos_days": oos_days,
+        report = {"ts": int(time.time()), "symbols": len(feats), "is_days": is_days, "oos_days": oos_days, "runs": len(cache),
                   "current": {"params": cur_row[0], "is": cur_row[1], "oos": cur_row[2]},
                   "best": {"params": best[0], "is": best[1], "oos": best[2]}, "ok_oos": ok_oos,
                   "changes": changes, "applied": applied, "msgs": msgs, "seconds": round(time.time() - t0)}
