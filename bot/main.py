@@ -335,21 +335,37 @@ class Bot:
         events = self.j.recent_events(72)
         params = self.s.get("signals")
         inst = self.ex.instruments()
-        self._universe = list(symbols)
-        # отложенные ордера считаем как занятые слоты: по символу, направлению, новости и риску
-        open_trades = self.j.open_trades() + [
-            {"symbol": p["symbol"], "side": p["side"], "entry": p["price"], "stop_init": p["stop"], "qty": p["qty"],
-             "qty_init": p["qty"], "event_key": p.get("event_key", ""), "pending": True} for p in self.j.pendings()]
+        if tag == "скан":
+            self._universe = list(symbols)   # реакция на новость оценивает 1-3 бумаги и не должна затирать список скана
+
+        def slots():
+            # отложенные ордера считаем как занятые слоты: по символу, направлению, новости и риску
+            return self.j.open_trades() + [
+                {"symbol": p["symbol"], "side": p["side"], "entry": p["price"], "stop_init": p["stop"], "qty": p["qty"],
+                 "qty_init": p["qty"], "event_key": p.get("event_key", ""), "pending": True} for p in self.j.pendings()]
+
+        open_trades = slots()
+        manage_sec = (self.s.get("intervals") or {}).get("manage_sec", 30)
         candidates = []
         funnel, best_weak = Counter(), None
         for sym in symbols:
             if self.tg.commands:   # скан длится минуты: команды из Telegram обрабатываем, не дожидаясь его конца
                 self.handle_commands(equity, positions)
-            if tag == "скан" and not self.events_q.empty():
-                # важная новость важнее планового скана: прерываем его и реагируем сразу (скан повторится через 5 минут)
-                log.info("скан прерван: новое событие, реагирую")
-                self.handle_events(equity, positions)
-                return 0
+            if tag == "скан" and (not self.events_q.empty() or time.time() - self.last["manage"] >= manage_sec):
+                # Новость и ведение позиций важнее планового скана: делаем их сразу и продолжаем скан с того же места.
+                # Раньше скан бросался и через 5 минут начинался заново: при 40 бумагах и частых новостях он не доходил до конца.
+                try:
+                    if not self.events_q.empty():
+                        self.handle_events(equity, positions)
+                    if time.time() - self.last["manage"] >= manage_sec:
+                        self.last["manage"] = time.time()
+                        self.exe.check_pendings(equity)
+                        self.closed_since_review += len(self.exe.manage())
+                    positions = self.ex.positions()
+                except Exception as e:  # noqa: BLE001
+                    log.warning("скан: новость/ведение позиций посреди скана: %s", e)
+                events = self.j.recent_events(72)
+                open_trades = slots()
             if sym not in inst:
                 continue
             try:
