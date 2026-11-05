@@ -28,7 +28,7 @@ turn = {n: 600e6 + i * 1e6 for i, n in enumerate(names)}
 turn.update({"HYZ6": 9e9, "SBERF": 8e9, "S00": 100e6})
 cfg = {"universe": {"top_n_by_turnover": 40, "min_turnover_24h_usd": 500e6, "always": ["SBERF"], "blacklist": ["HYDR"]}, "moex": {}}
 ex = MoexExchange.__new__(MoexExchange)
-ex.s = S(cfg); ex.instruments = lambda: inst; ex._turnover_today = lambda: turn
+ex.s = S(cfg); ex.instruments = lambda: inst; ex._turnover_today = lambda: turn; ex.mode = "demo"
 u = ex.universe()
 print("в списке", len(u), "| HYDR:", "HYDR" in u, "| фьючерс HYZ6:", "HYZ6" in u, "| S00 (оборот 100 млн):", "S00" in u, "| SBERF:", "SBERF" in u, "| SBER:", "SBER" in u)
 assert len(u) == 40 and "HYDR" not in u and "HYZ6" not in u and "S00" not in u and "SBERF" in u and "SBER" not in u
