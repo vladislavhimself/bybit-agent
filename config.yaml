@@ -176,10 +176,10 @@ markets:
       paper_mode_below_r: -0.02
     currency: RUB
     universe:
-      top_n_by_turnover: 20             # 20 ликвидных бумаг разных секторов: в 12 почти всё было сырьё (было 12)
+      top_n_by_turnover: 40             # 05.11: 48 бумаг на 7 годах дают 8.3 сделки в неделю против 4.9 при PF 1.38 против 1.47 (research/moex_universe.py)
       min_turnover_24h_usd: 500000000   # здесь это рубли: оборот акции за день от 500 млн; фьючерсам достаточно 30% от этого
       always: [SBERF, GAZPF, IMOEXF]    # вечные фьючерсы: без экспирации, торгуются вечером и в выходные
-      blacklist: []
+      blacklist: [HYDR, LSRG, PHOR, SNGSP]   # 05.11: на 7 годах убыток в обеих половинах истории (−21R, −9R, −7R, −16R); действует и на фьючерсы этих бумаг
     moex:
       sandbox_start_rub: 100000         # пополнение песочницы при первом запуске
       prefer: futures                   # на один базовый актив один инструмент: вечный фьючерс > квартальный > акция
@@ -259,13 +259,16 @@ markets:
       max_entries_per_day: 2            # не больше двух входов в сутки по одной компании в одну сторону (31.10: три Газпрома за день)
       news_exit_max_names: 4            # новость с 5+ тикерами считается общерыночной: позицию не закрывает, при imp 8+ подтягивает стоп
       max_per_base: 1                   # одна компания — одна позиция (акция или фьючерс)
+      base_alias: {SBERP: SBER, TATNP: TATN, SNGSP: SNGS, MTLRP: MTLR, BANEP: BANE, RTKMP: RTKM}   # привилегированная акция = та же компания
       max_per_sector: 2                 # не больше двух позиций в одном секторе: 27.10 было пять лонгов нефтегаза на одной новости
       sectors:
         oil_gas: [GAZP, LKOH, ROSN, NVTK, TATN, SNGS, SNGSP, TATNP, TRNFP, BANE, SIBN, RNFT]
         banks: [SBER, SBERP, VTBR, T, MOEX, SVCB, BSPB, CBOM, SFIN]
         metals: [GMKN, PLZL, CHMF, NLMK, MAGN, ALRS, RUAL, MTLR, SELG, UGLD, ENPG]
         index: [IMOEX, RTS]
-        retail_tech: [YDEX, OZON, X5, MGNT, POSI, VKCO, HEAD, LENT, ASTR, DIAS, SOFL]
+        retail_tech: [YDEX, OZON, X5, MGNT, POSI, VKCO, HEAD, LENT, ASTR, DIAS, SOFL, MVID, FIXR, WUSH, CNRU]
+        construction: [SMLT, PIKK, LSRG, ETLN, DOMRF]
+        holdings: [AFKS, SGZH]
         transport: [AFLT, NMTP, FLOT, FESH]
         telecom_energy: [MTSS, RTKM, IRAO, HYDR, FEES, UPRO, MSNG, PHOR, AKRN]
       news_min_hold_hours: 24           # архив новостей: плюс у бычьих новостей по бумаге набирается к суткам (+0.33%), не к 4 ч (+0.14%)

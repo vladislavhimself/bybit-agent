@@ -52,13 +52,14 @@ class WalkForward:
     def symbols(self):
         inst = self.ex.instruments()
         syms = []
+        black = set(self.s.get("universe.blacklist") or [])
         for p in self.hist.glob("*_60.csv"):
             sym = p.name[:-7]
-            if sym in inst:
+            if sym in inst and sym not in black:   # параметры подбираем на тех же бумагах, которыми торгуем
                 syms.append(sym)
         return sorted(syms)
 
-    def update_history(self, max_symbols=40):
+    def update_history(self, max_symbols=80):
         """Дотянуть свежие часовые свечи через брокера (ISS с иностранных и дата-центровых адресов не отвечает)."""
         n_ok = 0
         for sym in self.symbols()[:max_symbols]:

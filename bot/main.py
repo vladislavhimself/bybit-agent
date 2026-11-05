@@ -331,6 +331,7 @@ class Bot:
         if not ok:
             log.info("Новые входы запрещены: %s", why)
             return 0
+        t_scan = time.time()
         events = self.j.recent_events(72)
         params = self.s.get("signals")
         inst = self.ex.instruments()
@@ -380,7 +381,7 @@ class Bot:
                     best_weak = (sym, dg["strength"])
         candidates.sort(key=lambda x: x[0].strength, reverse=True)
         thr = self.s.get("signals.entry_threshold")
-        log.info("%s: %d символов, кандидатов %d | %s", tag, len(symbols), len(candidates),
+        log.info("%s: %d символов за %.0f с, кандидатов %d | %s", tag, len(symbols), time.time() - t_scan, len(candidates),
                  fmt.funnel_text(funnel, best_weak, thr))
         self.last_funnel = (funnel, best_weak)
         self.funnel_since_report.update(funnel)

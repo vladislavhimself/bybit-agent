@@ -275,8 +275,9 @@ class MoexExchange:
         chosen = {}   # base -> (priority, turnover, symbol)
         share_bases = {i["base"] for i in inst.values() if i["kind"] == "share"}
         allowed_idx = set(mcfg.get("allowed_future_bases") or ["IMOEX", "RTS"])
+        black = set(cfg.get("blacklist") or [])
         for sym, it in inst.items():
-            if sym in (cfg.get("blacklist") or []):
+            if sym in black or it["base"] in black:   # стоп-лист действует и на фьючерс этой бумаги
                 continue
             t = turnover.get(sym, 0.0)
             if it["kind"] == "future":

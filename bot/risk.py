@@ -146,10 +146,14 @@ class RiskManager:
         try:
             inst = self.ex.instruments().get(symbol) if hasattr(self.ex, "instruments") else None
             if inst and inst.get("base"):
-                return inst["base"]
+                return self._alias(inst["base"])
         except Exception:  # noqa: BLE001
             pass
-        return fmt.base_of(symbol)
+        return self._alias(fmt.base_of(symbol))
+
+    def _alias(self, base):
+        """Обычная и привилегированная акция — одна компания: Сбер-п и Сбер вместе были бы двойной ставкой на одно и то же."""
+        return (self.s.get("risk.base_alias") or {}).get(base, base)
 
     def can_open(self, symbol, open_trades, positions, equity, direction=None, event_key="", tier=None):
         """open_trades: открытые сделки + отложенные ордера (у каждого symbol, side, entry, stop_init, qty, event_key).
