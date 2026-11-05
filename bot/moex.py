@@ -3,6 +3,7 @@
 Единицы: symbol = тикер (SBER, SBERF, SRZ6, MXZ6). Количество везде в ЛОТАХ. Цена: у акций в рублях за акцию,
 у фьючерсов в пунктах. mult(symbol) = рублей за 1 пункт цены на 1 лот: у акций размер лота, у фьючерсов стоимость
 шага цены / шаг. Риск сделки = |вход − стоп| × mult × лоты, объём = цена × mult × лоты."""
+import json
 import logging
 import threading
 import time
@@ -62,6 +63,7 @@ class MoexExchange:
         self._figi2sym = {}
         self._turn_cache, self._turn_ts, self._iss_down_until, self._turn_thread = {}, 0.0, 0.0, None
         self._realized, self._realized_ts = 0.0, 0.0
+        self._px = {}   # последние цены инструментов (заполняются сканом): нужны, чтобы не брать в список контракт, который не открыть
         # Песочница списывает с денег полную стоимость позиции (ГО не знает): чтобы помещалось несколько позиций, как на
         # реальном счёте с плечом, добавлено виртуальное обеспечение. Оно вычитается из капитала в balances(): прибыль,
         # убыток и торговый капитал считаются так, будто его нет. Сумма хранится в файле рядом с номером счёта.
@@ -233,7 +235,7 @@ class MoexExchange:
                     cols = md["columns"]
                     # VALTODAY — оборот с начала дня: в 13:00 он вдвое меньше дневного, и половина бумаг не проходила
                     # порог. Приводим к полному дню по доле прошедшей сессии (10:00–23:50 МСК).
-                    msk = datetime.now(timezone.utc) + timedelta(hours=3)
+                    msk = self._msk_now()
                     frac = (msk.hour * 60 + msk.minute - 600) / (23 * 60 + 50 - 600)
                     scale = 1.0 / min(1.0, max(0.15, frac)) if 0 < frac < 1 else 1.0
                     for row in md["data"]:
@@ -244,11 +246,47 @@ class MoexExchange:
                     self._iss_down_until = now + 3600
                     out = {}
                     break
+        if out:
+            out = self._with_full_day(out)
         if not out:
             out = self._turnover_tinvest()
         if out:
             self._turn_cache, self._turn_ts = out, now
         return out
+
+    @staticmethod
+    def _msk_now():
+        return datetime.now(timezone.utc) + timedelta(hours=3)
+
+    def _with_full_day(self, today):
+        """Оборот неполного дня не должен затирать оборот полного. 03.11 до 10:00 МСК в скане было 8 бумаг, до 13:00 — 16:
+        утром сегодняшний оборот — это минуты утренней сессии, и почти ничто не проходило дневной порог.
+        В будни вечером (после 90% сессии) срез сохраняется как оборот полного дня; на следующий день список строится
+        по максимуму из него и сегодняшней оценки (оценке верим после 15% сессии, то есть с ~12:00 МСК).
+        В выходные торгуется малая часть бумаг: там, как и раньше, только сегодняшний оборот."""
+        msk = self._msk_now()
+        if msk.weekday() >= 5:
+            return today
+        frac = (msk.hour * 60 + msk.minute - 600) / (23 * 60 + 50 - 600)
+        path = DATA / "moex_turnover_full.json"
+        full = {}
+        try:
+            if path.exists():
+                saved = json.loads(path.read_text(encoding="utf-8"))
+                age = (msk.date() - datetime.strptime(saved["date"], "%Y-%m-%d").date()).days
+                if 0 <= age <= 5:
+                    full = saved.get("data") or {}
+        except (OSError, ValueError, KeyError):
+            full = {}
+        if frac >= 0.9:
+            try:
+                path.write_text(json.dumps({"date": msk.strftime("%Y-%m-%d"), "data": today}), encoding="utf-8")
+            except OSError as e:
+                log.warning("срез оборота полного дня не сохранён: %s", e)
+        if not full:
+            return today
+        reliable = frac >= 0.15
+        return {k: max(float(full.get(k) or 0.0), float(today.get(k) or 0.0) if reliable else 0.0) for k in set(full) | set(today)}
 
     def _turnover_tinvest(self):
         """Оборот по дневным свечам T-Invest: максимум за последние два торговых дня (утром сегодняшний ещё пуст).
@@ -273,8 +311,8 @@ class MoexExchange:
             it = inst[sym]
             try:
                 r = self.call("MarketDataService", "GetCandles", {"instrumentId": it["uid"], "interval": "CANDLE_INTERVAL_DAY",
-                                                                  "from": iso(end_ts - 3 * 86400), "to": iso(end_ts)}, retries=1)
-                vals = [float(c.get("volume") or 0) * q2f(c["close"]) * it["mult"] for c in r.get("candles", [])[-2:]]
+                                                                  "from": iso(end_ts - 6 * 86400), "to": iso(end_ts)}, retries=1)
+                vals = [float(c.get("volume") or 0) * q2f(c["close"]) * it["mult"] for c in r.get("candles", [])[-4:]]
                 out[sym] = max(vals) if vals else 0.0
             except Exception as e:  # noqa: BLE001
                 log.debug("оборот %s: %s", sym, e)
@@ -297,6 +335,8 @@ class MoexExchange:
         black = set(cfg.get("blacklist") or [])
         for sym, it in inst.items():
             if sym in black or it["base"] in black:   # стоп-лист действует и на фьючерс этой бумаги
+                continue
+            if self._too_expensive(sym, it):
                 continue
             t = turnover.get(sym, 0.0)
             if it["kind"] == "future":
@@ -327,6 +367,52 @@ class MoexExchange:
             if s in inst and s not in syms:
                 syms.append(s)
         return syms
+
+    def _too_expensive(self, sym, it):
+        """Песочница списывает полную стоимость контракта: если он дороже max_margin_share капитала (фьючерс на РТС ~152 тыс.,
+        на Лукойл ~62 тыс. при капитале 96 тыс.), открыть его нельзя. Такой контракт занимал место компании в списке,
+        и акция Лукойла из-за него не сканировалась. На реальном счёте нужно только гарантийное обеспечение — там не действует."""
+        if self.mode == "live" or it["kind"] != "future":
+            return False
+        cap = float(self.s.get("risk.capital_cap_usd") or 0) * float(self.s.get("risk.max_margin_share") or 0.6)
+        px = getattr(self, "_px", {}).get(sym)
+        return bool(cap and px and px * it["mult"] > cap)
+
+    def news_pick(self, base):
+        """Один инструмент на компанию для бумаги из новости: вечный фьючерс, иначе квартальный, иначе акция.
+        Стоп-лист, срок до экспирации и минимальная ликвидность действуют и здесь: раньше новость важности 6+ про бумагу
+        из стоп-листа добавляла её в скан на 72 часа, иногда ближайшим контрактом за пару дней до экспирации."""
+        cfg = self.s.get("universe") or {}
+        mcfg = self.s.get("moex") or {}
+        black = set(cfg.get("blacklist") or [])
+        if base in black:
+            return None
+        inst = self.instruments()
+        turn = self._turn_cache or {}
+        floor = float(cfg.get("min_turnover_24h_usd") or 0) * float(mcfg.get("news_turnover_mult", 0.2))
+        min_days = int(mcfg.get("min_days_to_expiry", 20))
+        today = datetime.now(timezone.utc).date()
+        prefer_fut = mcfg.get("prefer", "futures") == "futures"
+        cands = []
+        for sym in self.symbols_for_base(base):
+            it = inst[sym]
+            if sym in black or self._too_expensive(sym, it):
+                continue
+            need = floor
+            if it["kind"] == "future":
+                if it.get("expiration"):
+                    if (datetime.strptime(it["expiration"], "%Y-%m-%d").date() - today).days < min_days:
+                        continue
+                    prio = 2
+                else:
+                    prio = 3
+                need = floor * float(mcfg.get("futures_turnover_mult", 0.3))
+            else:
+                prio = 1
+            if turn and float(turn.get(sym) or 0.0) < need:
+                continue   # неликвид: спред и проскальзывание съедят идею
+            cands.append((prio if prefer_fut else 4 - prio, float(turn.get(sym) or 0.0), sym))
+        return max(cands)[2] if cands else None
 
     # ---------- рыночные данные ----------
     def klines(self, symbol, interval="60", limit=200, end=None):
@@ -361,7 +447,10 @@ class MoexExchange:
     def last_price(self, symbol):
         it = self.instruments()[symbol]
         r = self.call("MarketDataService", "GetLastPrices", {"instrumentId": [it["uid"]]})
-        return q2f(r["lastPrices"][0]["price"]) if r.get("lastPrices") else 0.0
+        px = q2f(r["lastPrices"][0]["price"]) if r.get("lastPrices") else 0.0
+        if px:
+            self._px[symbol] = px
+        return px
 
     def ticker(self, symbol):
         it = self.instruments()[symbol]

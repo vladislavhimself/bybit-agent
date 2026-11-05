@@ -380,7 +380,7 @@ class Bot:
             df1h = self.cache.get(sym, (0, None, None, None, None))[4]
             dg = {}
             fsc, ftxt = self.factors.score_for(inst[sym]["base"]) if self.factors else (0.0, "")
-            sig = build_signal(sym, inst[sym]["base"], ta, tk, oi, events, params, playbook=self.playbook,
+            sig = build_signal(sym, self.risk.base_of(sym), ta, tk, oi, events, params, playbook=self.playbook,
                                whale_net=self.whales.net_score(inst[sym]["base"]), mood=self.mood.score(),
                                df1h=df1h, psych_cfg=self.s.get("psychology") or {}, diag=dg, factor=fsc, factor_text=ftxt)
             if sig and self.divcal and self.divcal.blocks(sym, inst):
@@ -524,16 +524,22 @@ class Bot:
                     syms = [x for x in self.ex.symbols_for_base(base) if x in inst]
                     if not syms or any(x in universe for x in syms):
                         continue
-                    # одна бумага на компанию: вечный фьючерс, иначе ближайший квартальный, иначе акция
-                    perp = [x for x in syms if inst[x].get("perpetual")]
-                    fut = sorted((x for x in syms if inst[x]["kind"] == "future" and inst[x].get("expiration")),
-                                 key=lambda x: inst[x]["expiration"])
-                    share = [x for x in syms if inst[x]["kind"] == "share"]
-                    pick = (perp or fut or share)[:1]
+                    pick = self._news_pick(base, syms, inst)
                     if pick and pick[0] not in extra:
                         extra.append(pick[0])
         universe = universe + extra[:5]    # бережём лимиты брокера и внимание: ~12 ликвидных бумаг + до 5 по новостям
         self.evaluate(universe, equity, positions, tag="скан")
+
+    def _news_pick(self, base, syms, inst):
+        """Одна бумага на компанию из новости. На Мосбирже выбор делает биржевой модуль: стоп-лист, срок до экспирации
+        и минимальная ликвидность действуют и для бумаг, пришедших через новости."""
+        if hasattr(self.ex, "news_pick"):
+            pk = self.ex.news_pick(base)
+            return [pk] if pk else []
+        perp = [x for x in syms if inst[x].get("perpetual")]
+        fut = sorted((x for x in syms if inst[x]["kind"] == "future" and inst[x].get("expiration")), key=lambda x: inst[x]["expiration"])
+        share = [x for x in syms if inst[x]["kind"] == "share"]
+        return (perp or fut or share)[:1]
 
     def handle_events(self, equity, positions):
         """События из потока новостей: закрыть контр-позиции и сразу оценить затронутые монеты."""
@@ -559,12 +565,16 @@ class Bot:
             uni = set(getattr(self, "_universe", []) or [])
             for base in e["affected"]:
                 cands = self.ex.symbols_for_base(base)
-                touched.update([c for c in cands if c in uni] or cands[:1])   # только бумаги из скана, не все контракты
+                # только бумаги из скана; если компании в скане нет — один инструмент по общим правилам (стоп-лист, экспирация, ликвидность)
+                touched.update([c for c in cands if c in uni] or self._news_pick(base, cands, self.ex.instruments()))
             if e["market_wide"] and e["importance"] >= 8:
                 touched.update(self.s.get("universe.always") or [])
         for t in closed:
             if r.get("news_flip"):
                 touched.add(t["symbol"])
+        if touched and not self.session_open():
+            log.info("новость вне торговых часов: позиции проверены, новых входов нет (%s)", ", ".join(sorted(touched)))
+            touched = set()
         if touched:
             for sym in touched:
                 self.cache.pop(sym, None)
@@ -843,9 +853,14 @@ class Bot:
             return "paper_mode"
         strong_news = False
         if sig.news_driven and sig.events:
-            top = max(sig.events, key=lambda e: e["importance"] * e.get("confidence", 1))
-            age_min = (time.time() - top["ts"]) / 60
-            if top["importance"] < p.get("news_entry_min_importance", 0) or age_min > p.get("news_entry_max_age_min", 1e9):
+            # Вход по новости разрешён, если есть хотя бы одна свежая и достаточно важная новость в сторону сделки.
+            # Раньше судили по самой важной: утренняя новость важности 9 делала «старой» дневную важности 8, вышедшую минуту назад.
+            want = "bullish" if sig.direction == "long" else "bearish"
+            now_ts = time.time()
+            fresh = [e for e in sig.events if e.get("direction", want) == want
+                     and e["importance"] >= p.get("news_entry_min_importance", 0)
+                     and (now_ts - e["ts"]) / 60 <= p.get("news_entry_max_age_min", 1e9)]
+            if not fresh:
                 return "stale_news"
             strong_news = True
         if p.get("trend_gate") and not strong_news:
