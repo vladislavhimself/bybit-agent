@@ -237,6 +237,19 @@ class RiskManager:
             return False, f"суммарная экспозиция {exposure / t:.1f}x >= лимита"
         return True, ""
 
+    def direction_headroom(self, open_trades, equity, direction):
+        """Сколько риска ещё можно взять в эту сторону до потолка max_direction_risk_pct. Проверка в can_open считает новую
+        сделку по проценту её ступени, а вход одним лотом может рисковать больше (до max_single_lot_risk_pct): остаток
+        потолка передаётся в size() как ограничение, чтобы один лот не увёл суммарный риск за потолок."""
+        r = self.s.get("risk")
+        t = self.tradable(equity)
+        side = "Buy" if direction == "long" else "Sell"
+        inst_all = self.ex.instruments()
+        used = sum(abs(float(x.get("entry_init") or x.get("entry") or 0) - (x.get("stop_init") or x.get("stop") or 0))
+                   * (x.get("qty_init") or x.get("qty") or 0) * float(inst_all.get(x["symbol"], {}).get("mult") or 1.0)
+                   for x in open_trades if x["side"] == side)
+        return t * r.get("max_direction_risk_pct", 2.5) / 100 - used
+
     def size(self, symbol, equity, price, stop, tier, positions, risk_cap=None):
         """Вернуть (qty, leverage) или (None, причина). Размер считается от торгового капитала."""
         r = self.s.get("risk")
@@ -288,6 +301,8 @@ class RiskManager:
             # целые лоты (Мосбиржа): берём 1 лот, если его риск не больше max_single_lot_risk_pct капитала
             one_lot_risk = dist * mult * float(inst.get("lot_min", 1) or 1)
             hard = t * r.get("max_single_lot_risk_pct", 0) / 100
+            if datetime.now(timezone.utc).weekday() >= 5:
+                hard *= r.get("weekend_risk_mult", 1.0)   # в выходные множитель риска действует и на вход одним лотом
             if risk_cap is not None and one_lot_risk > risk_cap:
                 return None, f"один лот рискует {one_lot_risk:.0f}, остаток лимита сектора {risk_cap:.0f}"
             if inst.get("qty_step") == 1 and hard and one_lot_risk <= hard and self.ex.qty_ok(symbol, 1, price):

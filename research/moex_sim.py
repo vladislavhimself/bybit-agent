@@ -3,7 +3,9 @@
 
 Входы — как в боте: сила ТА ≥ порога (0.6·score), тренд/флэт по правилам ворот, вход лимиткой на откате 0.5 ATR,
 фильтр растяжения. Выходы: стоп в ATR, частичные тейки, безубыток, ступенчатая защита прибыли, лестница трейлинга,
-застой, тайм-стоп. Комиссия 0.04% за сторону + проскальзывание 0.05%. Результат сделки в R (риск = стоп)."""
+застой, тайм-стоп. Комиссия 0.052% за сторону + проскальзывание 0.05%. Результат сделки в R (риск = стоп).
+Время в сделке считается по часам на часах (как в боте), а не по числу свечей: в торговом дне 15–18 часовых свечей,
+и «24 часа» в свечах были полутора сутками, а «720 часов» — 45 днями вместо 30."""
 import os
 import sys
 
@@ -97,15 +99,34 @@ def features(df):
 
 
 
+# index_gate: ворота бота по тренду рынка (лонг только при растущем индексе и не против дневного тренда бумаги; шорт запрещён,
+# когда и индекс растёт, и бумага в дневном росте). long_mult: множитель силы технического лонга (signals.ta_long_mult).
 DEFAULT_GATES = {"thresh": 0.55, "ext_long": 3.0, "ext_short": 3.0, "range_long": False, "range_short": True,
-                 "high_vol": False, "counter_4h": False, "busy": 3, "max_per_day": 0}
+                 "high_vol": False, "counter_4h": False, "busy": 3, "max_per_day": 0, "index_gate": False, "long_mult": 1.0}
 DEFAULT_EXITS = dict(stop_mult=2.0, tps=((1.5, 0.25), (2.5, 0.35)), be_r=0.7, tiers=((1.5, 1.5), (3.0, 1.0), (5.0, 0.6)),
                      stall_h=12, trail_after=1.0, max_h=96)
 
 
-def load(hist_dir, symbols, days):
+def market_up(hist_dir, index="IMOEXF"):
+    """Режим рынка по дням, как Bot.market_regime: индекс выше 20-дневной средней и 5-дневная средняя не ниже 10-дневной.
+    Значение дня известно только после его закрытия, поэтому сдвиг на день (без заглядывания вперёд). None, если истории нет."""
+    p = os.path.join(hist_dir, f"{index}_60.csv")
+    if not os.path.exists(p):
+        return None
+    df = pd.read_csv(p)
+    if df.empty:
+        return None
+    ts = df.ts * 1000 if df.ts.max() < 1e11 else df.ts
+    c = pd.Series(df.close.values, index=pd.to_datetime(ts, unit="ms")).resample("1D").last().dropna()
+    up = ((c > c.rolling(20).mean()) & (c.rolling(5).mean() >= c.rolling(10).mean())).astype(float)
+    up[c.rolling(20).mean().isna()] = np.nan
+    return up.shift(1)
+
+
+def load(hist_dir, symbols, days, index="IMOEXF"):
     """Признаки по бумагам из data/history/<T>_60.csv за последние days дней."""
     feats = {}
+    mkt = market_up(hist_dir, index) if index else None
     for sym in symbols:
         p = os.path.join(hist_dir, f"{sym}_60.csv")
         if not os.path.exists(p):
@@ -121,6 +142,8 @@ def load(hist_dir, symbols, days):
             f = features(df)
             d = f.close.resample("1D").last().dropna()
             f["sma20d"] = d.rolling(20).mean().shift(1).reindex(f.index, method="ffill")
+            f["th"] = f.index.values.astype("datetime64[s]").astype("int64") / 3600.0   # время свечи в часах
+            f["mkt_up"] = mkt.reindex(f.index, method="ffill") if mkt is not None else np.nan
             feats[sym] = f
     return feats
 
@@ -133,6 +156,7 @@ def simulate(f, i, sg, stop_mult=2.0, tps=((1.5, 0.25), (2.5, 0.35)), be_r=0.7, 
     t4 = f.trend_4h.values
     a = f.atr.values[i]
     n = len(cl)
+    th = f.th.values if "th" in f.columns else np.arange(n, dtype=float)   # без столбца времени — по свечам, как раньше
     lim = cl[i] - sg * pull * a
     j0 = None
     for j in range(i + 1, i + 1 + wait):
@@ -148,7 +172,7 @@ def simulate(f, i, sg, stop_mult=2.0, tps=((1.5, 0.25), (2.5, 0.35)), be_r=0.7, 
     added = False
     tp_state = [[lvl, part, False] for lvl, part in tps]
     horizon = max_h_daily if daily_exit else max_h
-    end = min(n, start + horizon)
+    end = min(n, int(np.searchsorted(th, th[start] + horizon)))
     exit_bar = None
     for j in range(start, end):
         if (sg > 0 and lo[j] <= stop) or (sg < 0 and hi[j] >= stop):
@@ -168,7 +192,7 @@ def simulate(f, i, sg, stop_mult=2.0, tps=((1.5, 0.25), (2.5, 0.35)), be_r=0.7, 
         if cf > mfe:
             mfe, mfe_bar = cf, j
         r_now = sg * (cl[j] - entry) / R
-        hours = j - start + 1
+        hours = th[j] - th[start] + 1
         # пирамидинг: добор при +pyr_r R, тренд 4ч в нашу сторону; добор по текущей цене, учитывается как доля позиции
         if pyramid and not added and r_now >= pyr_r and (t4[j] > 0) == (sg > 0) and t4[j] != 0 and qty > 0:
             add_px = cl[j] * (1 + sg * SLIP)
@@ -192,7 +216,7 @@ def simulate(f, i, sg, stop_mult=2.0, tps=((1.5, 0.25), (2.5, 0.35)), be_r=0.7, 
                 qty = 0
                 exit_bar = j
                 break
-        if not daily_exit and qty > 0 and ((hours >= max_h and r_now < 0.5) or (stall_h and 0.1 <= r_now < 1.0 and hours >= stall_h and j - mfe_bar >= stall_h)):
+        if not daily_exit and qty > 0 and ((hours >= max_h and r_now < 0.5) or (stall_h and 0.1 <= r_now < 1.0 and hours >= stall_h and th[j] - th[mfe_bar] >= stall_h)):
             ex = cl[j] * (1 - sg * SLIP)
             realized += qty * sg * (ex - entry) / R - qty * FEE * ex / R
             if added:
@@ -240,6 +264,8 @@ def run(feats, gates=None, **exit_kw):
     for sym, f in feats.items():
         sc, rg, t4 = f.score.values, f.regime.values, f.trend_4h.values
         r24, ap = f.ret24.values, f.atr_pct.values
+        mk = f.mkt_up.values if "mkt_up" in f.columns else np.full(len(f), np.nan)
+        tdv = f.trend_d.fillna(0).values
         idx = f.index
         busy = -1
         day_cnt = {}
@@ -247,6 +273,13 @@ def run(feats, gates=None, **exit_kw):
             if i <= busy or abs(0.6 * sc[i]) < G["thresh"]:
                 continue
             sg = 1 if sc[i] > 0 else -1
+            if sg > 0 and abs(0.6 * sc[i]) * G["long_mult"] < G["thresh"]:
+                continue
+            if G["index_gate"]:
+                if sg > 0 and (mk[i] == 0 or tdv[i] < 0):
+                    continue
+                if sg < 0 and mk[i] == 1 and tdv[i] > 0:
+                    continue
             if G["max_per_day"]:
                 dk = (idx[i].normalize(), sg)
                 if day_cnt.get(dk, 0) >= G["max_per_day"]:

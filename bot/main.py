@@ -140,6 +140,10 @@ class Bot:
         self.last_funnel = (Counter(), None)
         self.cache = {}   # symbol -> (ts, ta, ticker, oi, df1h)
         self.kcache = {}  # (symbol, interval) -> (ts, df) для старших таймфреймов
+        self._data_err_ts = {}
+        if getattr(self.s, "learned", None):
+            # значения из файла обучения перекрывают config.yaml: показываем их при запуске, чтобы правка конфига не «терялась» молча
+            log.info("Параметры из файла обучения поверх конфига: %s", self.s.learned)
 
     # ---------- поток новостей ----------
     def _on_stream_items(self, items):
@@ -371,7 +375,10 @@ class Bot:
             try:
                 ta, tk, oi = self.market_data(sym, max_age)
             except Exception as e:  # noqa: BLE001
-                log.debug("%s: данные: %s", sym, e)
+                # раньше это писалось на уровне DEBUG и в журнале не было видно, по какой бумаге и почему нет данных
+                if time.time() - self._data_err_ts.get(sym, 0) > 3600:
+                    self._data_err_ts[sym] = time.time()
+                    log.warning("%s: нет данных для скана: %s", sym, str(e)[:160])
                 funnel["error"] += 1
                 continue
             if not ta:
@@ -465,6 +472,8 @@ class Bot:
                                                dist * qty, self.risk.tradable(equity), equity, ta, dry=True), html=True)
                 continue
             risk_cap = self._sector_risk_cap(sig, open_trades, equity)
+            head = self.risk.direction_headroom(open_trades, equity, sig.direction)   # остаток потолка риска по направлению
+            risk_cap = head if risk_cap is None else min(risk_cap, head)
             if risk_cap is not None and risk_cap <= 0:
                 log.info("%s: лимит риска на сектор исчерпан", sig.symbol)
                 self._shadow_from_signal(sig, ta, "limit_sector_risk")

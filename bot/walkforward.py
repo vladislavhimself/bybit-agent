@@ -92,7 +92,9 @@ class WalkForward:
         gates = {"ext_long": p["signals.max_extension_atr"],
                  "ext_short": self.s.get("signals.max_extension_atr_short") or p["signals.max_extension_atr"],
                  "range_short": bool(p["signals.range_shorts"]), "busy": int(p["risk.symbol_cooldown_hours"]),
-                 "thresh": float(p["signals.entry_threshold"])}
+                 "thresh": float(p["signals.entry_threshold"]),
+                 # то, что перерасчёт не подбирает, но бот применяет: ворота по тренду рынка и множитель технического лонга
+                 "index_gate": bool(self.s.get("signals.trend_gate")), "long_mult": float(self.s.get("signals.ta_long_mult") or 1.0)}
         tiers = tuple(tuple(x) for x in (self.s.get("risk.giveback_tiers") or [(1.5, 1.5), (3.0, 1.0), (5.0, 0.6)]))
         exits = dict(stop_mult=p["risk.stop_atr_mult"], be_r=p["risk.breakeven_r"], max_h=int(p["risk.max_hours_in_trade"]), tiers=tiers,
                      stall_h=int(p.get("risk.stall_hours", 12)), daily_exit=bool(p.get("risk.daily_trend_exit", 0)),

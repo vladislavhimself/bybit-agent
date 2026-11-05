@@ -27,13 +27,19 @@ REASON_RU = {
 
 
 def simulate(bars, side, ref_price, atr, risk, mode="market", pull_atr=0.5, wait_min=60, stop_dist=None,
-             force=False):
+             force=False, sma_at=None, fees=None):
     """bars: DataFrame 5m (ts в мс, open, high, low, close) с момента сигнала.
     mode: market = вход по открытию первой свечи; pullback = лимитный ордер на pull_atr ATR, ждём wait_min минут.
     Возвращает dict: done (сделка завершилась на имеющихся данных), filled, r (в R после комиссий), exit, mfe, mae.
     force=True закрывает остаток по последней цене, если данные кончились."""
     if bars is None or len(bars) == 0:
         return {"done": False, "filled": None, "r": None, "exit": "", "mfe": 0.0, "mae": 0.0}
+    FEE_TAKER, FEE_MAKER, SLIP = fees or (globals()["FEE_TAKER"], globals()["FEE_MAKER"], globals()["SLIP"])
+    # Дневной режим бота (risk.daily_trend_exit): защита прибыли, «застряла», тайм-стоп и лестница выключены; сделку ведут
+    # стоп, безубыток, защита доли пика и выход по 20-дневной средней. Тени должны считать те же правила, иначе вывод
+    # «фильтр помогает / мешает» сравнивает сигнал с выходами, которых у бота нет. sma_at(ts_ms) -> средняя или None.
+    daily = bool(risk.get("daily_trend_exit")) and sma_at is not None
+    plk = (risk.get("daily_peak_lock") or {}) if daily else {}
     t = bars["ts"].to_numpy(dtype="int64")
     o, hi, lo, cl = (bars[c].to_numpy(dtype=float) for c in ("open", "high", "low", "close"))
     n = len(t)
@@ -95,6 +101,19 @@ def simulate(bars, side, ref_price, atr, risk, mode="market", pull_atr=0.5, wait
         r_now = sg * (cl[j] - entry) / R
         hours = (t[j] + 300_000 - t[start]) / 3_600_000
         # 3) выходы на закрытии свечи, как в боте
+        if daily:
+            if hours >= 24 and (t[j] + 300_000) % 3_600_000 == 0:   # закрытие часа
+                sma = sma_at(int(t[j]))
+                if sma and ((sg > 0 and cl[j] < sma) or (sg < 0 and cl[j] > sma)):
+                    close_at(cl[j], "дневной тренд сломан")
+                    break
+            if mfe >= be_r:
+                be = entry * (1 + sg * 0.0015)
+                stop = max(stop, be) if sg > 0 else min(stop, be)
+            if plk and mfe >= float(plk.get("min_peak_r", 3.0)):
+                lock = entry + sg * mfe * float(plk.get("keep", 0.5)) * R
+                stop = max(stop, lock) if sg > 0 else min(stop, lock)
+            continue
         if mfe >= gb_min and r_now <= mfe - gb_r:
             close_at(cl[j], "защита прибыли")
             break
@@ -172,12 +191,30 @@ class ShadowBook:
         # свеча, начавшаяся до сигнала, не считается: вход только после сигнала
         return df[df["ts"] >= start_ms].reset_index(drop=True)
 
+    def _sma_by_day(self, symbol):
+        """Функция ts_ms -> 20-дневная средняя по дням, завершённым до этого дня (как Executor._sma20d). None, если данных нет."""
+        try:
+            d = self.ex.klines(symbol, "D", 45)
+            days = (d["ts"].astype("int64") // 86_400_000).to_numpy()
+            closes = d["close"].astype(float).to_numpy()
+        except Exception as e:  # noqa: BLE001
+            log.debug("тени: дневные свечи %s: %s", symbol, e)
+            return None
+
+        def sma_at(ts_ms):
+            prev = closes[days < ts_ms // 86_400_000]
+            return float(prev[-20:].mean()) if len(prev) >= 20 else None
+        return sma_at
+
     def resolve_due(self, now=None):
         """Проверить несколько созревших теневых сделок (бережём лимит запросов биржи)."""
         c = self.cfg()
         now = int(now or time.time())
         rows = self.j.shadows_due(now, c.get("resolve_per_cycle", 2))
         risk = self.s.get("risk") or {}
+        # Мосбиржа: комиссия по журналу 0.052% на сторону и проскальзывание 0.05% (как в симуляторе); крипта — прежние
+        fees = (0.00052, 0.00052, 0.0005) if getattr(self.ex, "price_based_pnl", False) else None
+        sma_cache = {}
         wait = (self.s.get("entry") or {}).get("wait_minutes", 60)
         horizon = c.get("horizon_hours", 72) * 3600
         for row in rows:
@@ -186,10 +223,15 @@ class ShadowBook:
                 end_ms = min(now * 1000, (row["ts"] + horizon) * 1000)
                 bars = self._bars(row["symbol"], start_ms, end_ms)
                 force = now >= row["ts"] + horizon
+                sma_at = None
+                if risk.get("daily_trend_exit"):
+                    if row["symbol"] not in sma_cache:
+                        sma_cache[row["symbol"]] = self._sma_by_day(row["symbol"])
+                    sma_at = sma_cache[row["symbol"]]
                 m = simulate(bars, row["side"], row["price"], row["atr"], risk, "market",
-                             stop_dist=row["stop_dist"], force=force)
+                             stop_dist=row["stop_dist"], force=force, sma_at=sma_at, fees=fees)
                 p = simulate(bars, row["side"], row["price"], row["atr"], risk, "pullback",
-                             pull_atr=row["pull_atr"], wait_min=wait, stop_dist=row["stop_dist"], force=force)
+                             pull_atr=row["pull_atr"], wait_min=wait, stop_dist=row["stop_dist"], force=force, sma_at=sma_at, fees=fees)
                 if (m["done"] and p["done"]) or force:
                     self.j.resolve_shadow(row["id"], m["r"], p["r"] if p["filled"] else None, m["exit"],
                                           m["mfe"], m["mae"], now)
