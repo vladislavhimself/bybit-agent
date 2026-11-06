@@ -44,31 +44,46 @@ def _future_date(d, m, y, today, max_days=90):
     return cand if 1 <= (cand - today).days <= max_days else None
 
 
-def _kind(ctx, whole):
-    if K_CUTOFF.search(ctx):
-        return "cutoff"
-    if K_DIV.search(ctx) or (K_DIV.search(whole) and (K_MEET.search(ctx) or re.search(r"совет|СД|набсовет", ctx, re.I))):
-        return "dividend"
-    if K_REPORT.search(ctx):
-        return "report"
-    if K_MEET.search(ctx):
-        return "meeting"
-    return "board"
+KINDS = [("cutoff", re.compile(r"последний день покупки|отсечк", re.I)),
+         ("record", re.compile(r"закрыти\w+ реестра|дата фиксации|выплат", re.I)),      # дата реестра и выплаты — не событие для цены
+         ("report", re.compile(r"отч[её]т|МСФО|РСБУ|опублику", re.I)),
+         ("meeting", re.compile(r"ВОСА|ГОСА|собрани", re.I)),
+         ("board", re.compile(r"совет\w* директоров|наблюдательн\w+ совет|набсовет|\bСД\b|заседани|рассмотр|день инвестора", re.I))]
+
+
+def _kind_at(text, a, b):
+    """Вид события для даты на позициях a..b: по ближайшему ключевому слову. Слово вплотную ПЕРЕД датой («отсечка - 15 декабря»,
+    «Последний день покупки: 10.12.2026») важнее слова после неё («30 ноября - X5 - ВОСА»)."""
+    best = None
+    lo, hi = max(0, a - 60), min(len(text), b + 110)
+    for kind, rx in KINDS:
+        for m in rx.finditer(text, lo, hi):
+            if m.end() <= a:
+                dist = a - m.end()
+                score = dist if dist <= 15 else dist + 40
+            elif m.start() >= b:
+                score = m.start() - b + 20
+            else:
+                continue
+            if best is None or score < best[0]:
+                best = (score, kind)
+    return best[1] if best else None
 
 
 def extract(text, bases, today=None, base=None):
     """Будущие события из текста по правилам: [(тикер, дата, вид)]. Только даты в будущем (от завтра до 90 дней) и только
-    рядом со словами про собрание, совет директоров, дивиденды, отчёт или отсечку. Тикер — из хэштега или латинского
-    тикера в тексте; если тикеров больше двух (подборка, дайджест) — ничего не берём. base — тикер известен заранее (раскрытие)."""
-    text = text or ""
+    рядом со словами про собрание, совет директоров, отчёт или отсечку. Тикер — из хэштега (#X5); без хэштега событий не
+    берём: в статьях и утренних подборках латинские слова и чужие даты дают мусор. Больше двух тикеров — подборка, не берём.
+    base — тикер известен заранее (раскрытие эмитента)."""
+    text = (text or "")[:1500 if base else 700]
     today = today or datetime.now(MSK).date()
     if base:
         syms = [base]
     else:
-        tags = [t for t in re.findall(r"#([A-Z][A-Z0-9]{0,5})\b", text) if t in bases]
-        syms = list(dict.fromkeys(tags)) or list(dict.fromkeys(t for t in re.findall(r"\b([A-Z][A-Z0-9]{1,5})\b", text) if t in bases))
+        syms = list(dict.fromkeys(t for t in re.findall(r"#([A-Z][A-Z0-9]{0,5})\b", text) if t in bases))
     if not syms or len(syms) > 2:
         return []
+    has_div = bool(K_DIV.search(text[:700]))
     found = []
     for m in list(D_TEXT.finditer(text)) + list(D_NUM.finditer(text)):
         if m.re is D_TEXT:
@@ -77,13 +92,14 @@ def extract(text, bases, today=None, base=None):
             dt = _future_date(int(m.group(1)), int(m.group(2)), m.group(3), today) if 1 <= int(m.group(2)) <= 12 else None
         if not dt:
             continue
-        ctx = text[max(0, m.start() - 110):m.end() + 110]
-        if not KEY.search(ctx):
+        k = _kind_at(text, m.start(), m.end())
+        if k in (None, "record"):
             continue
-        k = _kind(ctx, text[:600])
-        for s in syms:
-            if (s, dt, k) not in found:
-                found.append((s, dt, k))
+        if k in ("meeting", "board") and has_div:
+            k = "dividend"       # собрание или совет директоров в сообщении про дивиденды = решение по дивидендам
+        for sym in syms:
+            if (sym, dt, k) not in found:
+                found.append((sym, dt, k))
     return found
 
 
