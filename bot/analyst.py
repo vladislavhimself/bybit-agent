@@ -49,6 +49,8 @@ class NewsEvent(BaseModel):
     crowd_reaction: Literal["panic", "euphoria", "sell_the_news", "capitulation_done", "neutral"]
     contrarian_risk: float   # 0..1: вероятность, что толпа отреагирует ПРОТИВ очевидного смысла новости
     expected: str            # чего ждал рынок/консенсус до новости (из текста: "аналитики ожидали", "консенсус"), иначе ""
+    future_event_date: str   # ГГГГ-ММ-ДД, если в новости названа дата БУДУЩЕГО события по компании, иначе ""
+    future_event_kind: str   # dividend | report | meeting | board | cutoff | ""
     surprise: float          # -1..1: факт относительно ожиданий (+ лучше ожиданий, − хуже, 0 совпало или ожиданий нет)
     reasoning: str
 
@@ -80,7 +82,9 @@ SYSTEM_NEWS_MOEX = """Ты аналитик российского фондов�
 - affected_symbols: только тикеры Мосбиржи (SBER, GAZP, LKOH, ROSN, NVTK, GMKN, YDEX, TATN, VTBR, MGNT, PLZL, CHMF, NLMK,
   MTSS, ALRS, MOEX, OZON, T, AFLT, SNGS, X5, RUAL, PIKK, SMLT, NMTP, FLOT, IRAO, FEES, HYDR, UPRO, PHOR, VKCO, POSI,
   CNRU (Циан), HEAD (Хэдхантер), SVCB, AFKS, SIBN, MAGN, MTLR, SELG, MVID, BSPB, RTKM и другие — ровно как тикер на бирже),
-  которые реально затронуты, не больше четырёх. Не выдумывай тикеры и не перечисляй весь сектор ради полноты;
+  которые реально затронуты, не больше четырёх. Если в новости названа дата БУДУЩЕГО события по компании (совет директоров
+  или собрание по дивидендам, публикация отчёта, дивидендная отсечка), укажи future_event_date в виде ГГГГ-ММ-ДД и
+  future_event_kind (dividend, report, meeting, board, cutoff); если даты нет или событие уже прошло — пустые строки. Не выдумывай тикеры и не перечисляй весь сектор ради полноты;
 - market_wide = true для событий на весь рынок: ставка и риторика ЦБ, инфляция, бюджет, санкции против страны, геополитика,
   курс рубля, нефть. Такие новости не называй по бумагам, ставь флаг;
 - типы: решение ЦБ, инфляция, бюджет, нефть, рубль = macro; санкции, переговоры, законы, решения регуляторов = regulation;
@@ -270,6 +274,10 @@ class Analyst:
         pb = DATA / "moex_playbook.txt"
         if self.s.market == "moex" and pb.exists():
             parts.append(pb.read_text(encoding="utf-8")[:2500])
+        if getattr(self, "corpcal", None):
+            cc = self.corpcal.context_text()
+            if cc:
+                parts.append(cc)
         if getattr(self, "expectations", None):
             e = self.expectations.text()
             if e:

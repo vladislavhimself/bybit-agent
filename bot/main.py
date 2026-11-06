@@ -38,6 +38,7 @@ from .shadow import ShadowBook
 from .tg_live import TelegramLive
 from .driver import DriverCheck
 from .factors import Factors
+from .corpcal import KIND_RU, CorpCalendar
 from .divcal import DivCalendar
 from .walkforward import WalkForward
 from .signals import build_signal
@@ -98,6 +99,11 @@ class Bot:
         self.factors = Factors(self.s, self.ex) if hasattr(self.ex, "candles_uid") and self.s.get("signals.factor_map") else None
         self.wf = WalkForward(self.s, self.j, self.ex, self.tg) if (self.s.get("learning.walkforward") or {}).get("enabled") else None
         self.divcal = DivCalendar(self.s, self.ex) if hasattr(self.ex, "candles_uid") and self.s.get("risk.div_block_days") else None
+        # календарь ожидаемых событий по компаниям и сделки «на ожидании» в тенях (только Мосбиржа)
+        self.corpcal = CorpCalendar(self.s, self.j, self.ex) if hasattr(self.ex, "candles_uid") and (self.s.get("corpcal") or {}).get("enabled") else None
+        if self.analyst:
+            self.analyst.corpcal = self.corpcal
+        self._pre_event_done = {}
         self.exe.driver = (DriverCheck(self.s, self.analyst, self.j, self.ex)
                            if self.analyst and (self.s.get("risk.driver_check") or {}).get("mode") else None)
         self.reviewer = Reviewer(self.s, self.j, self.tg) if self.s.has_anthropic else None
@@ -185,6 +191,11 @@ class Bot:
         fast_rss = set(self.s.get("sources.rss_fast") or [])
         for it in fresh:
             self.j.mark_analyzed(it["id"])
+            if self.corpcal:
+                try:   # даты будущих событий вытаскиваем по правилам из каждой новости: до фильтров и без модели
+                    self.corpcal.ingest(it)
+                except Exception as e:  # noqa: BLE001
+                    log.debug("календарь событий: %s", e)
             # один и тот же заголовок из десяти каналов (особенно в день ЦБ): анализируем один раз за 2 часа
             key = _re.sub(r"[^a-zа-яё0-9%]+", " ", (it.get("title") or "").lower()).strip()[:70]
             now_ts = time.time()
@@ -276,6 +287,11 @@ class Bot:
                     except Exception:  # noqa: BLE001
                         pass
                 ev = self.analyst.classify(it["title"], body, it["source"], self._lessons())
+            if ev and self.corpcal:
+                try:
+                    self.corpcal.ingest_model(ev, it["title"], it["source"])
+                except Exception as e:  # noqa: BLE001
+                    log.debug("календарь событий (модель): %s", e)
             if not ev or not ev["relevant"]:
                 return
             if ev["already_priced"] and self.s.get("signals.drop_already_priced", True):
@@ -569,6 +585,57 @@ class Bot:
         except Exception as e:  # noqa: BLE001
             log.debug("проверка тикеров: %s", e)
 
+    def _runup_excess(self, symbol, n=10):
+        """Насколько бумага обогнала индекс за n завершённых торговых дней, %. None — нет данных."""
+        try:
+            idx = (self.s.get("signals.trend_index") or ["IMOEXF"])[0]
+            today_ms = int(time.time()) // 86400 * 86400 * 1000
+            out = []
+            for sym in (symbol, idx):
+                d = self._klines_cached(sym, "D", 250, 3600)
+                d = d[d["ts"] < today_ms]          # сегодняшний день не считаем: в нём уже сама новость
+                c = d["close"].astype(float)
+                if len(c) < n + 1:
+                    return None
+                out.append((c.iloc[-1] / c.iloc[-1 - n] - 1) * 100)
+            return out[0] - out[1]
+        except Exception as e:  # noqa: BLE001
+            log.debug("опережение рынка %s: %s", symbol, e)
+            return None
+
+    def step_corpcal(self, positions):
+        """Календарь событий: тени «на ожидании» и защита лонга накануне события. Если завтра или сегодня по компании
+        ожидается событие, бумага перед ним обогнала рынок, а лонг в плюсе — стоп подтягивается на половину текущей
+        прибыли: на факте, совпавшем с ожиданиями, такие бумаги продают."""
+        self.corpcal.tick(self.divcal)
+        psy = self.s.get("psychology") or {}
+        thr = float(psy.get("runup_excess_pct") or 0)
+        if not thr:
+            return
+        pos = {p["symbol"]: p for p in positions}
+        for t in self.j.open_trades():
+            p = pos.get(t["symbol"])
+            if t["side"] != "Buy" or not p:
+                continue
+            ev = self.corpcal.soon(self.risk.base_of(t["symbol"]), 1)
+            if not ev or self._pre_event_done.get(t["id"]) == ev["id"]:
+                continue
+            e0 = float(t.get("entry_init") or t["entry"])
+            risk_dist = abs(e0 - t["stop_init"])
+            mark = float(p.get("mark") or 0)
+            r_now = (mark - e0) / risk_dist if risk_dist > 0 and mark > 0 else 0
+            exc = self._runup_excess(t["symbol"], int(psy.get("runup_days", 10)))
+            if r_now < 0.5 or exc is None or exc < thr:
+                continue
+            self._pre_event_done[t["id"]] = ev["id"]
+            lock = e0 + 0.5 * r_now * risk_dist
+            if self.exe._move_stop(t, lock, f"накануне события ({ev['date']}): бумага обогнала рынок на {exc:.1f}%, держу половину прибыли", mark) is True:
+                self.tg.send("\n\n".join([
+                    f"🗓 <b>СОБЫТИЕ БЛИЗКО</b>: {fmt.esc(fmt.label(t['symbol']))} ЛОНГ",
+                    fmt.block("Что ожидается", f"{ev['date']}: {KIND_RU.get(ev['kind'], ev['kind'])} — {fmt.esc((ev.get('title') or '')[:120])}"),
+                    fmt.block("Что сделал", f"За {int(psy.get('runup_days', 10))} дней бумага обогнала рынок на {exc:.1f}%: на факте такие бумаги часто продают",
+                              f"Подтянул стоп до {lock:g} — половина текущей прибыли защищена")]), html=True)
+
     def _news_pick(self, base, syms, inst):
         """Одна бумага на компанию из новости. На Мосбирже выбор делает биржевой модуль: стоп-лист, срок до экспирации
         и минимальная ликвидность действуют и для бумаг, пришедших через новости."""
@@ -680,6 +747,9 @@ class Bot:
                     self.tg.send(self.wf.text(), html=True)
             elif c == "/calendar":
                 parts = [fmt.block("📅 Календарь", fmt.esc(self.cal.context_text(96)))]
+                if self.corpcal:
+                    parts.append(fmt.block("События по компаниям (3 недели)", *([fmt.esc(x) for x in self.corpcal.text(21, 30)] or ["пока нет"])))
+                    parts.append(fmt.block("Сделки «на ожидании» (тени, без денег)", *[fmt.esc(x) for x in self.corpcal.shadow_text()]))
                 if self.divcal:
                     parts.append(fmt.block("Дивидендные отсечки (30 дн.)", *([fmt.esc(x) for x in self.divcal.text(30)] or ["нет"])))
                 if self.factors:
@@ -900,6 +970,16 @@ class Bot:
                      and (now_ts - e["ts"]) / 60 <= p.get("news_entry_max_age_min", 1e9)]
             if not fresh:
                 return "stale_news"
+            # Психология «купили на ожидании, продали на факте»: если перед новостью бумага уже обогнала рынок на несколько
+            # процентов, покупать на самой новости поздно (06.11 X5: +9% за две недели при +3% у рынка, на факте −3% за три минуты).
+            # Исключение — новость важности 9+: это не ожидавшийся факт, а новое событие.
+            psy = self.s.get("psychology") or {}
+            thr = float(psy.get("runup_excess_pct") or 0)
+            if thr and sig.direction == "long" and max(e["importance"] for e in fresh) < 9:
+                exc = self._runup_excess(sig.symbol, int(psy.get("runup_days", 10)))
+                if exc is not None and exc >= thr:
+                    sig.reasons.append(f"психология: за {int(psy.get('runup_days', 10))} дней бумага обогнала рынок на {exc:.1f}% — новость во многом в цене")
+                    return "priced_in"
             strong_news = True
         if p.get("trend_gate") and not strong_news:
             # ворота по тренду — для технических и слабых сигналов; сильная свежая новость идёт в любую сторону
@@ -1017,6 +1097,12 @@ class Bot:
                 if self.s.market == "moex" and now - self.last.get("cbr_reminder", 0) >= 3600:
                     self.last["cbr_reminder"] = now
                     self._cbr_consensus_reminder()
+                if self.corpcal and now - self.last.get("corpcal", 0) >= 600:
+                    self.last["corpcal"] = now
+                    try:
+                        self.step_corpcal(positions)
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("календарь событий: %s", e)
                 if self.divcal and time.time() - self.divcal.ts > 6 * 3600:
                     threading.Thread(target=self.divcal.refresh, daemon=True, name="divcal").start()
                 self.mood.refresh()
