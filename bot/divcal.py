@@ -75,6 +75,30 @@ class DivCalendar:
             return f"дивидендная отсечка: последний день покупки {rec['last_buy']}, дивиденд {rec['div']:g} ({rec['yield']:g}%)"
         return ""
 
+    def short_block(self, symbol, inst=None):
+        """Причина запрета ШОРТА перед отсечкой или пусто. На 263 отсечках 2019–2026 бумага с объявленным дивидендом за 20 торговых
+        дней до отсечки обгоняла рынок в среднем на 4.4% (в 76% случаев, каждый год): желающие получить дивиденд покупают
+        и не продают, шорт идёт против течения (research/moex_dividend_events.py). Действует и на фьючерс этой бумаги."""
+        c = self.s.get("risk.div_short_block") or {}
+        days = int(c.get("days", 0) or 0)
+        if not days:
+            return ""
+        it = (inst or {}).get(symbol) or {}
+        rec = self.next.get(it.get("base") or symbol)
+        if not rec or float(rec.get("yield") or 0) < float(c.get("min_yield", 5)):
+            return ""
+        try:
+            lb = datetime.strptime(rec["last_buy"], "%Y-%m-%d").date()
+        except ValueError:
+            return ""
+        today = datetime.now(timezone.utc).date()
+        if lb < today:
+            return ""
+        left = sum(1 for i in range((lb - today).days) if (today + timedelta(days=i)).weekday() < 5)   # торговых дней до отсечки
+        if left <= days:
+            return f"до дивидендной отсечки {left} торг. дн. (купить до {rec['last_buy']}, дивиденд {rec['div']:g}, {rec['yield']:g}%): шорт против течения"
+        return ""
+
     def text(self, days=30):
         today = datetime.now(timezone.utc).date()
         out = []

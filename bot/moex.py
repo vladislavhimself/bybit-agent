@@ -6,6 +6,7 @@
 import json
 import logging
 import threading
+import zlib
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -63,6 +64,7 @@ class MoexExchange:
         self._figi2sym = {}
         self._turn_cache, self._turn_ts, self._iss_down_until, self._turn_thread = {}, 0.0, 0.0, None
         self._realized, self._realized_ts = 0.0, 0.0
+        self._ccache, self._clock = {}, threading.Lock()   # свечи в памяти: (uid, интервал) -> серия
         self._px = {}   # последние цены инструментов (заполняются сканом): нужны, чтобы не брать в список контракт, который не открыть
         self._ensure_account()
         if not net.relay_enabled() and not net.ru_proxy():   # напрямую из-за границы: держим соединение тёплым; через ретранслятор не нужно
@@ -401,29 +403,60 @@ class MoexExchange:
         return self.candles_uid(it["uid"], interval, limit, end, it["mult"])
 
     def candles_uid(self, uid, interval="60", limit=200, end=None, mult=1.0):
-        """Свечи по uid инструмента: акции, фьючерсы и индикативы (Brent, RGBI, курс доллара)."""
-        it = {"uid": uid, "mult": mult}
+        """Свечи по uid инструмента: акции, фьючерсы и индикативы (Brent, RGBI, курс доллара).
+        Для «живых» запросов (end не задан) свечи хранятся в памяти и докачивается только свежий хвост: раньше каждый скан
+        заново качал 300 часовых свечей четырьмя запросами и 100 пятнадцатиминутных тремя — 10–15 запросов на бумагу,
+        200–270 секунд на 45 бумаг. Раз в 60–90 минут каждая серия перекачивается целиком (сверка с брокером)."""
+        interval = str(interval)
+        if end is None and self.s.get("moex.candle_cache", True):
+            return self._candles_cached(uid, interval, limit, mult)
+        return self._candles_fetch(uid, interval, limit, end, mult).tail(limit).reset_index(drop=True)
+
+    def _candles_cached(self, uid, interval, limit, mult):
+        key, now = (uid, interval), time.time()
+        mins = INTERVALS[interval][1]
+        with self._clock:
+            ent = self._ccache.get(key)
+        if ent is None or len(ent["df"]) < limit or now - ent["full_ts"] > ent["full_every"]:
+            df = self._candles_fetch(uid, interval, limit, None, mult).tail(max(limit, 320)).reset_index(drop=True)
+            # перекачка целиком у разных бумаг в разное время, чтобы не попадала на один скан
+            ent = {"df": df, "full_ts": now, "tail_ts": now, "full_every": 3600 + zlib.crc32(f"{uid}:{interval}".encode()) % 1800}
+        elif now - ent["tail_ts"] >= 20:
+            # хвост: от предпоследней сохранённой свечи до сейчас (незакрытая свеча и последняя закрытая обновляются)
+            start = int(ent["df"]["ts"].iloc[-1] / 1000) - 2 * mins * 60
+            new = self._candles_fetch(uid, interval, 0, None, mult, start_ts=start)
+            df = pd.concat([ent["df"], new]).drop_duplicates("ts", keep="last").sort_values("ts")
+            df = df.tail(max(limit, 320)).reset_index(drop=True)
+            ent = dict(ent, df=df, tail_ts=now)
+        with self._clock:
+            self._ccache[key] = ent
+            if len(self._ccache) > 2000:
+                self._ccache.clear()
+        return ent["df"].tail(limit).reset_index(drop=True).copy()
+
+    def _candles_fetch(self, uid, interval, limit, end, mult, start_ts=None):
+        """Запрос свечей у брокера кусками по допустимому периоду. start_ts задан — всё от него до конца; иначе с запасом под limit."""
         iv, mins = INTERVALS[str(interval)]
         end_ts = int(end / 1000) if end else int(time.time())
-        # торги не круглосуточные: берём запас по времени, чтобы набрать нужное число свечей
-        need_sec = int(limit * mins * 60 * (2.2 if mins >= 1440 else 1.9)) + 86400
-        start_ts = end_ts - need_sec
+        if start_ts is None:
+            # торги не круглосуточные: берём запас по времени, чтобы набрать нужное число свечей
+            need_sec = int(limit * mins * 60 * (2.2 if mins >= 1440 else 1.9)) + 86400
+            start_ts = end_ts - need_sec
         span = MAX_SPAN_MIN[str(interval)] * 60
         rows = []
         cur = start_ts
         while cur < end_ts:
             to = min(end_ts, cur + span)
-            r = self.call("MarketDataService", "GetCandles", {"instrumentId": it["uid"], "interval": iv,
+            r = self.call("MarketDataService", "GetCandles", {"instrumentId": uid, "interval": iv,
                                                               "from": iso(cur), "to": iso(to)})
             for c in r.get("candles", []):
                 ts = int(datetime.strptime(c["time"][:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).timestamp() * 1000)
                 vol = float(c.get("volume") or 0)
                 o, h, l, cl = q2f(c["open"]), q2f(c["high"]), q2f(c["low"]), q2f(c["close"])
-                rows.append([ts, o, h, l, cl, vol, vol * cl * it["mult"]])
+                rows.append([ts, o, h, l, cl, vol, vol * cl * mult])
             cur = to
         cols = ["ts", "open", "high", "low", "close", "volume", "turnover"]
-        df = pd.DataFrame(rows, columns=cols).drop_duplicates("ts").sort_values("ts").reset_index(drop=True)
-        return df.tail(limit).reset_index(drop=True)
+        return pd.DataFrame(rows, columns=cols).drop_duplicates("ts").sort_values("ts").reset_index(drop=True)
 
     def last_price(self, symbol):
         it = self.instruments()[symbol]

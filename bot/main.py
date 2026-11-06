@@ -425,6 +425,13 @@ class Bot:
                 funnel["div_gap"] += 1
                 self._shadow_from_signal(sig, ta, "div_gap")
                 sig = None
+            if sig and sig.direction == "short" and self.divcal:
+                why = self.divcal.short_block(sym, inst)
+                if why:
+                    log.info("%s: %s", sym, why)
+                    funnel["div_runup"] += 1
+                    self._shadow_from_signal(sig, ta, "div_runup")
+                    sig = None
             if sig:
                 candidates.append((sig, ta, tk))
             else:
