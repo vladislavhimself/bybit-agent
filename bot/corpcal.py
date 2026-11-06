@@ -241,6 +241,8 @@ class CorpCalendar:
                 continue
             if ev["base"] in black or (min_t and float(turn.get(ev["base"]) or 0) < min_t):
                 continue      # оборот неизвестен (срез ещё не посчитан) или мал — не берём
+            if ev["base"] in (self.s.get("risk.base_alias") or {}):
+                continue      # привилегированная акция — та же компания: тень ведём по обыкновенной
             try:
                 d = self._daily(ev["base"])
                 di = self._daily(index)
