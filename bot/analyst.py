@@ -50,7 +50,9 @@ class NewsEvent(BaseModel):
     contrarian_risk: float   # 0..1: вероятность, что толпа отреагирует ПРОТИВ очевидного смысла новости
     expected: str            # чего ждал рынок/консенсус до новости (из текста: "аналитики ожидали", "консенсус"), иначе ""
     future_event_date: str   # ГГГГ-ММ-ДД, если в новости названа дата БУДУЩЕГО события по компании, иначе ""
-    future_event_kind: str   # dividend | report | meeting | board | cutoff | ""
+    future_event_kind: str   # dividend | report | meeting | board | cutoff | geo | sanctions | cb | fed | opec | macro | speech | offering | buyback | court | ""
+    future_event_scope: str  # company | sector | market | ""
+    future_event_expect: str  # hope (рынок ждёт хорошего) | fear (ждёт плохого) | unknown | ""
     surprise: float          # -1..1: факт относительно ожиданий (+ лучше ожиданий, − хуже, 0 совпало или ожиданий нет)
     reasoning: str
 
@@ -84,7 +86,11 @@ SYSTEM_NEWS_MOEX = """Ты аналитик российского фондов�
   CNRU (Циан), HEAD (Хэдхантер), SVCB, AFKS, SIBN, MAGN, MTLR, SELG, MVID, BSPB, RTKM и другие — ровно как тикер на бирже),
   которые реально затронуты, не больше четырёх. Если в новости названа дата БУДУЩЕГО события по компании (совет директоров
   или собрание по дивидендам, публикация отчёта, дивидендная отсечка), укажи future_event_date в виде ГГГГ-ММ-ДД и
-  future_event_kind (dividend, report, meeting, board, cutoff); если даты нет или событие уже прошло — пустые строки. Не выдумывай тикеры и не перечисляй весь сектор ради полноты;
+  future_event_kind (dividend, report, meeting, board, cutoff, offering, buyback, court); если даты нет или событие уже прошло —
+  пустые строки. То же для событий всего рынка или отрасли с датой: переговоры и встречи лидеров (geo), санкции, ультиматумы и
+  дедлайны (sanctions), заседания ЦБ (cb) и ФРС (fed), ОПЕК+ (opec), важная статистика (macro), большие выступления (speech).
+  future_event_scope: company, sector или market. future_event_expect: hope — рынок ждёт от события хорошего и покупает заранее;
+  fear — ждёт плохого; unknown — исход неясен. Не выдумывай тикеры и не перечисляй весь сектор ради полноты;
 - market_wide = true для событий на весь рынок: ставка и риторика ЦБ, инфляция, бюджет, санкции против страны, геополитика,
   курс рубля, нефть. Такие новости не называй по бумагам, ставь флаг;
 - типы: решение ЦБ, инфляция, бюджет, нефть, рубль = macro; санкции, переговоры, законы, решения регуляторов = regulation;
@@ -229,6 +235,13 @@ class Analyst:
             return "minimal"
         if soft and usd >= soft:
             return "economy"
+        if hard and self.s.get("llm.pacing"):
+            # Лимит растянут на торговый день: к каждому часу можно потратить не больше своей доли (четверть сразу, остальное
+            # равномерно с 07:00 до 23:50 МСК). Раньше 6 $ кончались к обеду, и вечерние новости разбирала дешёвая модель.
+            h = time.gmtime()
+            frac = min(1.0, max(0.0, (h.tm_hour * 60 + h.tm_min - 240) / (1250 - 240)))    # 04:00–20:50 UTC
+            if usd >= hard * (0.25 + 0.75 * frac):
+                return "economy"
         mcap = float(self.s.get("llm.monthly_budget_usd") or 0)
         if mcap and self.cost.month() >= 0.8 * mcap:
             return "economy"

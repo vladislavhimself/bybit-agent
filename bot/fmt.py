@@ -15,6 +15,7 @@ REASONS_RU = {
     "no_data": "мало данных", "error": "ошибка данных",
     "trend_gate": "против тренда рынка", "stale_news": "новость слабая или старше 15 мин",
     "priced_in": "бумага уже обогнала рынок перед новостью",
+    "event": "против ожиданий рынка перед событием", "theme": "против темы рынка", "macro_window": "окно статистики для индекса",
     "paper_mode": "режим наблюдения (тени в минусе)",
     "limit_same_base": "по этой компании уже есть позиция", "limit_sector": "лимит позиций в секторе",
     "div_gap": "дивидендная отсечка на днях", "div_runup": "шорт перед дивидендной отсечкой",
@@ -171,7 +172,9 @@ def balance_message(equity, m, positions, stats, cap, llm=None, next_macro=None,
         parts.append(block("Сделки", f"{stats['n']}: прибыльных {stats['win_rate']}%, средний результат {stats['avg_r']}R",
                            f"Итог {signed(stats['pnl'])} {CUR} с учётом комиссий ({money(stats.get('fees', 0), 2)} {CUR})"))
     if llm:
-        lines = [f"Сегодня: {llm['usd']:.2f} $ ({llm['calls']} вызовов)", "⁣"]   # пустая строка между «сегодня» и «за месяц»
+        tier_ru = {"normal": "обычный: сильная модель на важные источники", "economy": "экономный: сильная модель только на быстрые каналы и раскрытия",
+                   "minimal": "минимальный: всё разбирает дешёвая модель до конца суток"}.get(llm.get("tier"))
+        lines = [f"Сегодня: {llm['usd']:.2f} $ ({llm['calls']} вызовов)"] + ([f"Режим: {tier_ru}"] if tier_ru else []) + ["⁣"]   # пустая строка между «сегодня» и «за месяц»
         if llm.get("month") is not None:
             lines.append(f"За месяц: {llm['month']:.2f} $" + (f" из {llm['cap']:.0f} $" if llm.get("cap") else ""))
         if llm.get("total") is not None:

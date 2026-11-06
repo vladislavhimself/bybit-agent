@@ -30,7 +30,22 @@ K_DIV = re.compile(r"дивиденд", re.I)
 K_REPORT = re.compile(r"отч[её]т|МСФО|РСБУ|результат", re.I)
 K_MEET = re.compile(r"ВОСА|ГОСА|собрани", re.I)
 KIND_RU = {"dividend": "решение по дивидендам", "report": "отчёт", "meeting": "собрание акционеров", "board": "совет директоров",
-           "cutoff": "дивидендная отсечка", "other": "событие"}
+           "cutoff": "дивидендная отсечка", "other": "событие",
+           # события всего рынка и секторов
+           "geo": "переговоры и геополитика", "sanctions": "санкции и ультиматумы", "cb": "Банк России", "macro": "статистика",
+           "fed": "ФРС", "opec": "ОПЕК+", "speech": "выступление", "expiry": "экспирация", "index": "пересмотр индекса",
+           "sector": "решение по отрасли", "offering": "размещение акций", "buyback": "оферта или выкуп", "court": "суд", "lockup": "конец запрета продаж"}
+# Чего рынок ждёт от события, если модель не сказала иначе: hope — ждут хорошего (перед событием покупают, шорт против течения),
+# fear — ждут плохого (зеркально), unknown — исход неизвестен (вход прямо перед событием — лотерея)
+EXPECT_DEFAULT = {"geo": "hope", "dividend": "hope", "buyback": "hope", "sanctions": "fear", "offering": "fear", "lockup": "fear"}
+MARKET = "MARKET"
+M_RULES = [("geo", re.compile(r"переговор|саммит|перемири|мирн\w+ (план|соглашен|урегулирован|договор)|встреч\w+ (лидер|президент|делегац)", re.I)),
+           ("sanctions", re.compile(r"санкци|ультиматум|дедлайн", re.I)),
+           ("cb", re.compile(r"(заседани\w+|решени\w+)[^.]{0,40}(Банка России|ЦБ РФ|\bЦБ\b)|по ключевой ставке", re.I)),
+           ("fed", re.compile(r"ФРС|FOMC", re.I)),
+           ("opec", re.compile(r"ОПЕК", re.I)),
+           ("speech", re.compile(r"послани\w+ (президент|Путин|Федеральному)|прямая линия|ПМЭФ|Валдай|ВЭФ", re.I)),
+           ("index", re.compile(r"(баз\w+ расч[её]та|пересмотр\w*|ребалансир\w+)[^.]{0,40}индекс", re.I))]
 TRADE_KINDS = ("dividend", "report", "meeting", "board")     # перед отсечкой ход изучен отдельно (research/moex_dividend_events.py)
 
 
@@ -103,6 +118,37 @@ def extract(text, bases, today=None, base=None):
     return found
 
 
+def extract_market(text, today=None):
+    """События всего рынка из текста по правилам: [(дата, вид)]. Дата в будущем (до 45 дней) и рядом с ней слово про переговоры,
+    санкции, заседание ЦБ или ФРС, ОПЕК, большое выступление, пересмотр индекса. Только короткие сообщения: в длинных статьях
+    и подборках даты относятся к чему угодно."""
+    text = (text or "")[:500]
+    today = today or datetime.now(MSK).date()
+    found = []
+    for m in list(D_TEXT.finditer(text)) + list(D_NUM.finditer(text)):
+        if m.re is D_TEXT:
+            dt = _future_date(int(m.group(1)), MONTHS[m.group(2).lower()], m.group(3), today, 45)
+        else:
+            dt = _future_date(int(m.group(1)), int(m.group(2)), m.group(3), today, 45) if 1 <= int(m.group(2)) <= 12 else None
+        if not dt:
+            continue
+        ctx = text[max(0, m.start() - 110):m.end() + 110]
+        for kind, rx in M_RULES:
+            if rx.search(ctx):
+                if (dt, kind) not in found:
+                    found.append((dt, kind))
+                break
+    return found
+
+
+def trading_days_until(d, today=None):
+    """Сколько торговых дней от сегодня до даты: 0 — сегодня, 1 — следующий торговый день; прошедшая дата — −1."""
+    today = today or datetime.now(MSK).date()
+    if d < today:
+        return -1
+    return sum(1 for i in range(1, (d - today).days + 1) if (today + timedelta(days=i)).weekday() < 5)
+
+
 class CorpCalendar:
     def __init__(self, settings, journal, exchange):
         self.s, self.j, self.ex = settings, journal, exchange
@@ -113,6 +159,11 @@ class CorpCalendar:
             id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER UNIQUE, base TEXT, event_date TEXT, kind TEXT,
             entry_ts INTEGER, entry REAL, stop REAL, idx_entry REAL, exit_ts INTEGER, exit REAL, idx_exit REAL,
             pct REAL, exc_pct REAL, status TEXT, why TEXT)""")
+        for col in ("expect TEXT DEFAULT ''", "hhmm TEXT DEFAULT ''"):
+            try:
+                self.j._run(f"ALTER TABLE corp_events ADD COLUMN {col}")
+            except Exception:  # noqa: BLE001
+                pass
         self._bases, self._bases_ts = set(), 0.0
         self._tick_ts = 0.0
 
@@ -129,22 +180,24 @@ class CorpCalendar:
         return self._bases
 
     # ---------- сбор ----------
-    def add(self, base, dt, kind, title="", source=""):
-        """True, если событие новое. dt — date или строка ГГГГ-ММ-ДД."""
+    def add(self, base, dt, kind, title="", source="", expect="", hhmm=""):
+        """True, если событие новое. dt — date или строка ГГГГ-ММ-ДД. base — тикер, MARKET (весь рынок) или SECTOR:<название>."""
         ds = dt.isoformat() if isinstance(dt, date) else str(dt)[:10]
         try:
             d = datetime.strptime(ds, "%Y-%m-%d").date()
         except ValueError:
             return False
         today = datetime.now(MSK).date()
-        if base not in self.bases() or not (0 <= (d - today).days <= 120):
+        scope_ok = base == MARKET or base in self.bases() or (base.startswith("SECTOR:") and base[7:] in (self.s.get("risk.sectors") or {}))
+        if not scope_ok or not (0 <= (d - today).days <= 120):
             return False
         kind = kind if kind in KIND_RU else "other"
+        expect = expect if expect in ("hope", "fear", "unknown") else EXPECT_DEFAULT.get(kind, "unknown")
         if self.j._run("SELECT 1 FROM corp_events WHERE base=? AND date=? AND kind=?", (base, ds, kind), "one"):
             return False
-        self.j._run("INSERT OR IGNORE INTO corp_events(base,date,kind,title,source,created_ts) VALUES(?,?,?,?,?,?)",
-                    (base, ds, kind, (title or "")[:200], source, int(time.time())))
-        log.info("календарь: %s %s — %s (%s)", base, ds, KIND_RU[kind], source)
+        self.j._run("INSERT OR IGNORE INTO corp_events(base,date,kind,title,source,created_ts,expect,hhmm) VALUES(?,?,?,?,?,?,?,?)",
+                    (base, ds, kind, (title or "")[:200], source, int(time.time()), expect, hhmm or ""))
+        log.info("календарь: %s %s — %s, ожидание %s (%s)", base, ds, KIND_RU[kind], expect, source)
         return True
 
     def ingest(self, item):
@@ -153,6 +206,10 @@ class CorpCalendar:
         n = 0
         for base, dt, kind in extract(text, self.bases(), base=item.get("base")):
             n += self.add(base, dt, kind, item.get("title") or "", item.get("source") or "")
+        if not item.get("base") and (item.get("source") or "").startswith("tg:"):
+            # события всего рынка: только из телеграм-каналов (короткие сообщения), не из статей
+            for dt, kind in extract_market(text):
+                n += self.add(MARKET, dt, kind, item.get("title") or "", item.get("source") or "")
         return n
 
     def ingest_model(self, ev, title, source):
@@ -160,14 +217,106 @@ class CorpCalendar:
         ds, kind = (ev.get("future_event_date") or "").strip(), (ev.get("future_event_kind") or "").strip().lower()
         if not re.fullmatch(r"20\d\d-\d\d-\d\d", ds):
             return 0
-        kind = {"dividends": "dividend", "earnings": "report", "agm": "meeting", "egm": "meeting"}.get(kind, kind)
+        kind = {"dividends": "dividend", "earnings": "report", "agm": "meeting", "egm": "meeting", "talks": "geo", "geopolitics": "geo",
+                "rate": "cb", "cbr": "cb", "fomc": "fed"}.get(kind, kind)
+        expect = (ev.get("future_event_expect") or "").strip().lower()
+        scope = (ev.get("future_event_scope") or "").strip().lower()
         syms = [x for x in (ev.get("affected_symbols") or []) if x in self.bases()][:2]
-        return sum(self.add(b, ds, kind, title, f"модель/{source}") for b in syms)
+        if scope == "market" or (ev.get("market_wide") and scope != "company") or (not syms and kind in ("geo", "sanctions", "cb", "fed", "opec", "macro", "speech", "index")):
+            return int(self.add(MARKET, ds, kind, title, f"модель/{source}", expect))
+        if scope == "sector":
+            sectors = self.s.get("risk.sectors") or {}
+            secs = {k for k, v in sectors.items() for x in (ev.get("affected_symbols") or []) if x in v}
+            return sum(self.add("SECTOR:" + k, ds, kind if kind in KIND_RU else "sector", title, f"модель/{source}", expect) for k in list(secs)[:2])
+        return sum(self.add(b, ds, kind, title, f"модель/{source}", expect) for b in syms)
 
     def sync_cutoffs(self, divcal):
         for base, rec in (getattr(divcal, "next", None) or {}).items():
             if rec.get("last_buy"):
                 self.add(base, rec["last_buy"], "cutoff", f"последний день покупки под дивиденд {rec.get('div', 0):g} руб. ({rec.get('yield', 0)}%)", "брокер")
+
+    def sync_schedule(self, cal=None):
+        """Регулярные события без новостей: недельная инфляция (среда, 19:00 МСК), экспирация индексных фьючерсов,
+        релизы высокой важности из макро-календаря (ЦБ, ФРС, статистика США)."""
+        today = datetime.now(MSK).date()
+        wed = today + timedelta(days=(2 - today.weekday()) % 7)
+        self.add(MARKET, wed, "macro", "Недельная инфляция (Росстат)", "расписание", "unknown", "19:00")
+        try:
+            exp = sorted({i["expiration"] for i in self.ex.instruments().values() if i.get("kind") == "future" and i.get("expiration")
+                          and i.get("base") in ("IMOEX", "RTS")})
+            for e in exp[:2]:
+                self.add(MARKET, e, "expiry", "Экспирация фьючерсов на индексы", "брокер", "unknown")
+        except Exception as e:  # noqa: BLE001
+            log.debug("календарь: экспирации: %s", e)
+        for e in (getattr(cal, "events", None) or []):
+            try:
+                if e.get("impact") != "high" or not (0 <= e["ts"] - time.time() <= 14 * 86400):
+                    continue
+                dt = datetime.fromtimestamp(e["ts"], MSK)
+                src = (e.get("source") or "").lower()
+                ttl = e.get("title", "")
+                kind = "fed" if e.get("kind") == "fomc" or "fed" in src or "FOMC" in ttl else ("cb" if "ЦБ" in ttl or "Банк" in ttl and "Росси" in ttl else "macro")
+                self.add(MARKET, dt.date(), kind, e.get("title", ""), "макро-календарь", "unknown", dt.strftime("%H:%M"))
+            except Exception:  # noqa: BLE001
+                continue
+
+    # ---------- поведение перед событием ----------
+    def _scope_events(self, base, sector, days):
+        keys = {MARKET, base}
+        if sector:
+            keys.add("SECTOR:" + sector)
+        return [r for r in self.upcoming(days + 4) if r["base"] in keys]
+
+    def entry_block(self, base, sector, direction, now=None):
+        """Причина запрета входа из-за события в календаре или пусто.
+        Ждут хорошего: за pre_days торговых дней новые шорты закрыты (06.11 бот шортил банк и индекс за два дня до мирных
+        переговоров, о которых знал неделю); в день события по компании или сектору — новых лонгов нет (на факте продают).
+        Ждут плохого — зеркально. Исход неизвестен и время известно: за 30 минут до и 15 после входов нет."""
+        c = self.cfg()
+        pre = int(c.get("pre_days", 3))
+        now_msk = datetime.now(MSK) if now is None else datetime.fromtimestamp(now, MSK)
+        for ev in self._scope_events(base, sector, pre):
+            d = trading_days_until(datetime.strptime(ev["date"], "%Y-%m-%d").date(), now_msk.date())
+            if d < 0 or d > pre:
+                continue
+            exp, name = ev.get("expect") or "unknown", f"{KIND_RU.get(ev['kind'], ev['kind'])} {ev['date'][8:]}.{ev['date'][5:7]}"
+            against = "short" if exp == "hope" else ("long" if exp == "fear" else None)
+            if against and direction == against:
+                return f"впереди событие, которого рынок ждёт с {'надеждой' if exp == 'hope' else 'опаской'} ({name}): {'шорт' if against == 'short' else 'лонг'} против течения"
+            if against and d == 0 and ev["base"] != MARKET and direction != against:
+                return f"день события ({name}): на ожидавшемся факте {'покупать поздно' if exp == 'hope' else 'продавать поздно'}"
+            if exp == "unknown" and d == 0 and ev.get("hhmm"):
+                try:
+                    hh, mm = map(int, ev["hhmm"].split(":"))
+                    t_ev = now_msk.replace(hour=hh, minute=mm, second=0, microsecond=0)
+                    delta = (now_msk - t_ev).total_seconds() / 60
+                    if -float(c.get("unknown_before_min", 30)) <= delta <= float(c.get("unknown_after_min", 15)):
+                        return f"окно события с неизвестным исходом ({name} в {ev['hhmm']})"
+                except ValueError:
+                    pass
+        return ""
+
+    def side_cap(self, direction):
+        """Сколько позиций в эту сторону можно держать, пока впереди событие с ожиданием против неё (любой области): несколько
+        шортов перед событием, которого ждут с надеждой, — одна большая ставка против рынка. None — без ограничения."""
+        c = self.cfg()
+        pre = int(c.get("pre_days", 3))
+        want = "hope" if direction == "short" else "fear"
+        today = datetime.now(MSK).date()
+        for ev in self.upcoming(pre + 4):
+            if (ev.get("expect") or "") == want and 0 <= trading_days_until(datetime.strptime(ev["date"], "%Y-%m-%d").date(), today) <= pre:
+                return int(c.get("side_cap", 2))
+        return None
+
+    def tighten_for(self, base, sector, side):
+        """Событие, из-за которого стоп по открытой позиции надо подтянуть: до него не больше одного торгового дня,
+        а ожидание рынка против позиции. side — Buy/Sell."""
+        want = "hope" if side == "Sell" else "fear"
+        today = datetime.now(MSK).date()
+        for ev in self._scope_events(base, sector, 1):
+            if (ev.get("expect") or "") == want and 0 <= trading_days_until(datetime.strptime(ev["date"], "%Y-%m-%d").date(), today) <= 1:
+                return ev
+        return None
 
     # ---------- чтение ----------
     def upcoming(self, days=21, base=None):
@@ -185,9 +334,12 @@ class CorpCalendar:
 
     def text(self, days=14, limit=25):
         out = []
+        exp_ru = {"hope": "ждут хорошего", "fear": "ждут плохого"}
         for r in self.upcoming(days)[:limit]:
             d = datetime.strptime(r["date"], "%Y-%m-%d")
-            out.append(f"{d.strftime('%d.%m')} {r['base']}: {KIND_RU.get(r['kind'], r['kind'])}")
+            who = "РЫНОК" if r["base"] == MARKET else (r["base"][7:] if r["base"].startswith("SECTOR:") else r["base"])
+            tail = (f" в {r['hhmm']}" if r.get("hhmm") else "") + (f" — {exp_ru[r['expect']]}" if r.get("expect") in exp_ru else "")
+            out.append(f"{d.strftime('%d.%m')} {who}: {KIND_RU.get(r['kind'], r['kind'])}{tail}")
         return out
 
     def context_text(self):
@@ -207,7 +359,7 @@ class CorpCalendar:
             p -= timedelta(days=1)
         return p
 
-    def tick(self, divcal=None, index="IMOEXF"):
+    def tick(self, divcal=None, index="IMOEXF", cal=None):
         """Раз в полчаса: отсечки из календаря брокера, новые тени «на ожидании», закрытие созревших."""
         if time.time() - self._tick_ts < 1800:
             return
@@ -218,6 +370,10 @@ class CorpCalendar:
                 self.sync_cutoffs(divcal)
             except Exception as e:  # noqa: BLE001
                 log.debug("календарь: отсечки: %s", e)
+        try:
+            self.sync_schedule(cal)
+        except Exception as e:  # noqa: BLE001
+            log.debug("календарь: расписание: %s", e)
         if not c.get("pre_event_shadow", True):
             return
         today = datetime.now(MSK).date()
@@ -237,7 +393,7 @@ class CorpCalendar:
         turn = getattr(self.ex, "_turn_cache", None) or {}
         for ev in self.upcoming(hi):
             days_left = (datetime.strptime(ev["date"], "%Y-%m-%d").date() - today).days
-            if ev["id"] in have or ev["kind"] not in TRADE_KINDS or days_left < lo or ev["base"] in opened_bases:
+            if ev["id"] in have or ev["kind"] not in TRADE_KINDS or days_left < lo or ev["base"] in opened_bases or ev["base"] not in self.bases():
                 continue
             if ev["base"] in black or (min_t and float(turn.get(ev["base"]) or 0) < min_t):
                 continue      # оборот неизвестен (срез ещё не посчитан) или мал — не берём

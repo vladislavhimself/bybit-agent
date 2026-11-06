@@ -6,6 +6,7 @@ import logging
 import os
 import itertools
 import queue
+import re
 from datetime import timezone, datetime
 from zoneinfo import ZoneInfo
 from collections import Counter
@@ -38,7 +39,8 @@ from .shadow import ShadowBook
 from .tg_live import TelegramLive
 from .driver import DriverCheck
 from .factors import Factors
-from .corpcal import KIND_RU, CorpCalendar
+from .corpcal import KIND_RU, MARKET as CAL_MARKET, CorpCalendar
+from .theme import ClusterWatch, MarketTheme
 from .divcal import DivCalendar
 from .walkforward import WalkForward
 from .signals import build_signal
@@ -62,6 +64,14 @@ def setup_logging():
 
 
 log = logging.getLogger("main")
+# Слова, по которым новость из общей ленты (ТАСС, РИА) считается возможно рыночной и идёт к модели. Остальное из этих лент
+# отбрасывается без вызова модели. Работает только для источников из llm.rule_filter_sources (по умолчанию список пуст).
+RULE_KEYS = re.compile(
+    r"ставк|\bЦБ\b|Банк\w* России|инфляц|рубл|доллар|юан|евро|нефт|газ|Brent|ОПЕК|санкц|переговор|перемири|Украин|Трамп|Путин|Иран|Китай|"
+    r"бирж|акци|дивиденд|облигац|ОФЗ|бюджет|Минфин|налог|пошлин|экспорт|импорт|ВВП|банк|кредит|ипотек|ФРС|рынк|индекс|IPO|SPO|"
+    r"отч[её]т|прибыл|выручк|сделк|слияни|поглощ|национализ|изъят|суд\w* (взыскал|арестовал|удовлетворил)|авари|взрыв|атак|удар\w* по|"
+    r"Сбер|Газпром|Лукойл|Роснефт|Новатэк|Норникел|Яндекс|ВТБ|Мосбирж|Аэрофлот|Озон|Ozon|Северстал|НЛМК|ММК|Полюс|Алроса|Татнефт|"
+    r"Сургут|Магнит|X5|Русал|МТС|Ростелеком|Самолет|ПИК|Т-Техн|Тинькофф|Совкомбанк|Фосагро|Интер РАО|Русгидро|Транснефт|Система|ВК\b", re.I)
 
 
 class _NoMood:
@@ -104,6 +114,10 @@ class Bot:
         if self.analyst:
             self.analyst.corpcal = self.corpcal
         self._pre_event_done = {}
+        # главная тема рынка (раз в час и сразу после серии новостей) и серии общерыночных новостей об одном
+        self.theme = MarketTheme(self.s, self.j, self.analyst, self.corpcal, self._index_move) if self.analyst and (self.s.get("theme") or {}).get("enabled") else None
+        self.clusters = ClusterWatch(self.s, self._index_move) if (self.s.get("clusters") or {}).get("enabled") else None
+        self._theme_now = False
         self.exe.driver = (DriverCheck(self.s, self.analyst, self.j, self.ex)
                            if self.analyst and (self.s.get("risk.driver_check") or {}).get("mode") else None)
         self.reviewer = Reviewer(self.s, self.j, self.tg) if self.s.has_anthropic else None
@@ -147,6 +161,7 @@ class Bot:
         self.cache = {}   # symbol -> (ts, ta, ticker, oi, df1h)
         self.kcache = {}  # (symbol, interval) -> (ts, df) для старших таймфреймов
         self._data_err_ts = {}
+        self._rule_dropped = 0
         if getattr(self.s, "learned", None):
             # значения из файла обучения перекрывают config.yaml: показываем их при запуске, чтобы правка конфига не «терялась» молча
             log.info("Параметры из файла обучения поверх конфига: %s", self.s.learned)
@@ -189,6 +204,7 @@ class Bot:
         import re as _re
         fast = {f"tg:{c}" for c in (self.s.get("sources.telegram_fast") or [])} | {"disclosure"}
         fast_rss = set(self.s.get("sources.rss_fast") or [])
+        rule_srcs = set(self.s.get("llm.rule_filter_sources") or [])
         for it in fresh:
             self.j.mark_analyzed(it["id"])
             if self.corpcal:
@@ -206,6 +222,9 @@ class Bot:
                 if len(self.seen_titles) > 5000:
                     self.seen_titles = {k: v for k, v in self.seen_titles.items() if now_ts - v < 7200}
             src = it["source"]
+            if src in rule_srcs and not RULE_KEYS.search((it.get("title") or "") + " " + (it.get("summary") or "")[:400]):
+                self._rule_dropped += 1     # общая лента, ни одного рыночного слова: модель не спрашиваем
+                continue
             prio = 0 if src in fast or src in fast_rss else (1 if src.startswith("tg:") else 2)
             self.analyze_q.put((prio, next(self._seq), it))
         qn = self.analyze_q.qsize()
@@ -306,6 +325,21 @@ class Bot:
                    "affected": ev["affected_symbols"], "market_wide": ev["market_wide"],
                    "horizon_hours": ev["horizon_hours"], "reasoning": ev["reasoning"], "title": it["title"]}
             self.events_q.put(rec)
+            if self.clusters:
+                try:
+                    syn = self.clusters.add(rec)
+                    if syn:
+                        self.j.add_event(syn["news_id"], syn["ts"], {"event_type": syn["event_type"], "importance": 8, "direction": syn["direction"],
+                                         "confidence": 0.8, "affected_symbols": [], "market_wide": True, "horizon_hours": 24,
+                                         "reasoning": syn["reasoning"]}, syn["title"])
+                        self.events_q.put(syn)
+                        self._theme_now = True     # главный цикл пересчитает тему рынка сразу
+                        d = {"bullish": "позитив", "bearish": "негатив", "neutral": "сторона неясна"}[syn["direction"]]
+                        self.tg.send("\n\n".join([f"📣 <b>СЕРИЯ НОВОСТЕЙ</b> — {syn['n']} сообщений об одном за полчаса",
+                                                   fmt.block("О чём", fmt.esc(syn["title"][16:])),
+                                                   fmt.block("Оценка", f"Считаю одним событием важности 8 ({d}): стопы встречных позиций подтягиваю, тему рынка пересчитываю")]), html=True)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("серии новостей: %s", e)
             if ev["importance"] >= 8:
                 d = {"bullish": "позитив", "bearish": "негатив", "neutral": "нейтрально"}[ev["direction"]]
                 parts = [f"📰 <b>ВАЖНАЯ НОВОСТЬ</b> — {fmt.RU_TYPE.get(ev['event_type'], 'событие')}, важность {ev['importance']}/10",
@@ -433,10 +467,18 @@ class Bot:
                     self._shadow_from_signal(sig, ta, "div_runup")
                     sig = None
             if sig:
+                why, code = self._context_block(sig, inst[sym])
+                if why:
+                    log.info("%s %s: %s", sym, sig.direction, why)
+                    funnel[code] += 1
+                    self._shadow_from_signal(sig, ta, code)
+                    sig = None
+            if sig:
                 candidates.append((sig, ta, tk))
             else:
                 funnel[dg.get("reason", "no_data")] += 1
                 self._shadow_from_diag(sym, dg, ta)
+                self._tech_long_shadow(sym, inst[sym], dg, ta, params)
                 if dg.get("reason") == "weak" and (best_weak is None or dg["strength"] > best_weak[1]):
                     best_weak = (sym, dg["strength"])
         candidates.sort(key=lambda x: x[0].strength, reverse=True)
@@ -481,6 +523,14 @@ class Bot:
                 if code and code != "symbol_busy":
                     self._shadow_from_signal(sig, ta, "limit_" + code)
                 continue
+            cap = self.corpcal.side_cap(sig.direction) if self.corpcal else None
+            if cap is not None:
+                side = "Buy" if sig.direction == "long" else "Sell"
+                n_side = sum(1 for x in open_trades if x["side"] == side)
+                if n_side >= cap:
+                    log.info("%s: перед событием уже %d позиции в эту сторону (не больше %d)", sig.symbol, n_side, cap)
+                    self._shadow_from_signal(sig, ta, "limit_event_cap")
+                    continue
             if sig.tier == "conviction":
                 if not self.analyst:
                     sig.tier = "high"
@@ -592,6 +642,62 @@ class Bot:
         except Exception as e:  # noqa: BLE001
             log.debug("проверка тикеров: %s", e)
 
+    def _index_move(self, minutes):
+        """Ход индекса за последние minutes минут, %. Для темы рынка и серий новостей."""
+        idx = (self.s.get("signals.trend_index") or ["IMOEXF"])[0]
+        d = self.ex.klines(idx, "15" if minutes <= 600 else "60", 100 if minutes <= 600 else 300)
+        t0 = (time.time() - minutes * 60) * 1000
+        prev = d[d["ts"] <= t0]
+        if not len(prev) or not len(d):
+            return 0.0
+        return (float(d["close"].iloc[-1]) / float(prev["close"].iloc[-1]) - 1) * 100
+
+    def _sector_of(self, base):
+        return next((k for k, v in (self.s.get("risk.sectors") or {}).items() if base in v), None)
+
+    def _context_block(self, sig, it):
+        """Причина отказа из-за общего фона (и код для теней) или ("", ""). Сигнал по графику одной бумаги не видит, что
+        впереди событие, которого ждёт весь рынок, и какая тема его двигает: 06.11 бот шортил банк и индекс перед мирными переговорами."""
+        base = self.risk.base_of(sig.symbol)
+        if self.corpcal:
+            why = self.corpcal.entry_block(base, self._sector_of(base), sig.direction)
+            if why:
+                return why, "event"
+        if self.theme:
+            why = self.theme.blocks(sig.direction, sig.news_driven)
+            if why:
+                return why, "theme"
+        mw = self.s.get("signals.index_macro_window") or {}
+        if mw and it.get("base") in ("IMOEX", "RTS"):
+            black, ev = self.cal.blackout(float(mw.get("before_min", 30)), float(mw.get("after_min", 15)))
+            if black:
+                return f"окно статистики для индексного фьючерса: {ev['title'][:60]}", "macro_window"
+        return "", ""
+
+    def _tech_long_shadow(self, sym, it, dg, ta, params):
+        """Технический лонг по теме рынка — только в тенях. По правилам бота чисто технический лонг порог не проходит (сила x0.85),
+        на истории такие лонги теряли. Когда рынок живёт позитивной темой или ждёт события с надеждой, записываем тень:
+        что было бы, если бы лонг без понижения открывался. Статистика — в /shadow, решение о включении — по ней."""
+        try:
+            if dg.get("reason") != "weak" or dg.get("direction") != "long" or dg.get("news_driven"):
+                return
+            mult = float(params.get("ta_long_mult") or 1.0)
+            thr = float(params.get("entry_threshold") or 0)
+            raw = float(dg.get("strength") or 0) / mult if mult else 0.0
+            if mult >= 1.0 or raw < thr:
+                return
+            base = self.risk.base_of(sym)
+            st = self.theme.active() if self.theme else None
+            hope = bool(self.corpcal and self.corpcal.side_cap("short") is not None)
+            if not ((st and st["direction"] == "bullish") or hope):
+                return
+            if self.corpcal and self.corpcal.entry_block(base, self._sector_of(base), "long"):
+                return
+            self.shadow.record(sym, "long", "tech_long_theme", raw, thr, ta.get("price_now") or ta["close"], ta["atr"],
+                               regime=ta.get("regime", ""), comps=dg.get("comps"), ext=dg.get("ext", 0.0), news_driven=False)
+        except Exception as e:  # noqa: BLE001
+            log.debug("тень технического лонга %s: %s", sym, e)
+
     def _runup_excess(self, symbol, n=10):
         """Насколько бумага обогнала индекс за n завершённых торговых дней, %. None — нет данных."""
         try:
@@ -614,15 +720,38 @@ class Bot:
         """Календарь событий: тени «на ожидании» и защита лонга накануне события. Если завтра или сегодня по компании
         ожидается событие, бумага перед ним обогнала рынок, а лонг в плюсе — стоп подтягивается на половину текущей
         прибыли: на факте, совпавшем с ожиданиями, такие бумаги продают."""
-        self.corpcal.tick(self.divcal)
+        self.corpcal.tick(self.divcal, cal=self.cal)
+        trades = self.j.open_trades()
+        pos = {p["symbol"]: p for p in self.ex.positions()} if trades else {}
+        # до события не больше одного торгового дня, а рынок ждёт исхода против позиции: риск режется вдвое
+        for t in trades:
+            p = pos.get(t["symbol"])
+            base = self.risk.base_of(t["symbol"])
+            ev = self.corpcal.tighten_for(base, self._sector_of(base), t["side"]) if p else None
+            if not ev or self._pre_event_done.get((t["id"], "against")) == ev["id"]:
+                continue
+            self._pre_event_done[(t["id"], "against")] = ev["id"]
+            long = t["side"] == "Buy"
+            e0 = float(t.get("entry_init") or t["entry"])
+            risk_dist = abs(e0 - t["stop_init"])
+            mark = float(p.get("mark") or 0)
+            new_stop = e0 - 0.5 * risk_dist if long else e0 + 0.5 * risk_dist
+            if risk_dist <= 0 or mark <= 0 or (long and new_stop >= mark) or (not long and new_stop <= mark):
+                continue      # цена уже за новым уровнем: по рынку не выходим, остаётся исходный стоп
+            name = f"{KIND_RU.get(ev['kind'], ev['kind'])} {ev['date'][8:]}.{ev['date'][5:7]}"
+            if self.exe._move_stop(t, new_stop, f"перед событием ({name}), которого рынок ждёт против позиции: риск вдвое меньше", mark) is True:
+                self.tg.send("\n\n".join([
+                    f"🗓 <b>СОБЫТИЕ БЛИЗКО</b>: {fmt.esc(fmt.label(t['symbol']))} {'ЛОНГ' if long else 'ШОРТ'}",
+                    fmt.block("Что ожидается", f"{name}: {fmt.esc((ev.get('title') or '')[:140])}",
+                              "Рынок ждёт от события " + ("хорошего" if ev.get("expect") == "hope" else "плохого") + " — это против позиции"),
+                    fmt.block("Что сделал", f"Подтянул стоп до {new_stop:g}: риск по сделке вдвое меньше. Позицию не закрываю")]), html=True)
         psy = self.s.get("psychology") or {}
         thr = float(psy.get("runup_excess_pct") or 0)
         if not thr:
             return
-        longs = [t for t in self.j.open_trades() if t["side"] == "Buy"]
+        longs = [t for t in trades if t["side"] == "Buy"]
         if not longs:
             return
-        pos = {p["symbol"]: p for p in self.ex.positions()}
         for t in longs:
             p = pos.get(t["symbol"])
             if not p:
@@ -705,7 +834,7 @@ class Bot:
         if self.analyst:
             c = self.analyst.cost.today()
             extra = float(sum((self.s.get("llm.extra_spend_usd") or {}).values()) if isinstance(self.s.get("llm.extra_spend_usd"), dict) else 0)
-            llm = {"calls": c["calls"], "usd": c["usd"], "budget": self.analyst.budget, "month": self.analyst.cost.month(),
+            llm = {"calls": c["calls"], "usd": c["usd"], "budget": self.analyst.budget, "month": self.analyst.cost.month(), "tier": self.analyst.spend_tier(),
                    "cap": float(self.s.get("llm.monthly_budget_usd") or 0), "total": self.analyst.cost.total() + extra, "extra": extra}
         self.tg.send(fmt.balance_message(equity, m, positions, self.j.stats(), float(self.s.get("risk.capital_cap_usd") or 0),
                                          llm, self.cal.next_high(), self.xstream.status() if self.xstream else None,
@@ -911,6 +1040,8 @@ class Bot:
                                  else "режим индекса не определён"))
         except Exception as e:  # noqa: BLE001
             log.debug("now_lines: %s", e)
+        if self.theme and self.theme.text():
+            out.append(self.theme.text())
         return out
 
     def _start_block(self):
@@ -1118,6 +1249,9 @@ class Bot:
                 self.mood.refresh()
                 if self.expect and self.expect.due(now):
                     self.expect.refresh(now)
+                if self.theme and (self._theme_now or self.theme.due(now)):
+                    self._theme_now = False
+                    threading.Thread(target=self.theme.refresh, daemon=True, name="theme").start()   # вызов модели не должен держать цикл
                 if self.analyst and now - self.last.get("llm_month_check", 0) >= 3600:
                     self.last["llm_month_check"] = now
                     cap = float(self.s.get("llm.monthly_budget_usd") or 0)
