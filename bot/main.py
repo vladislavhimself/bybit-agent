@@ -267,6 +267,7 @@ class Bot:
                 return
             if ev["already_priced"] and self.s.get("signals.drop_already_priced", True):
                 return   # на Мосбирже выключено: по архиву «уже в цене» события шли в сторону прогноза не хуже остальных
+            self._note_unknown_tickers(ev)
             self.j.add_event(it["id"], it["published_ts"], ev, it["title"])
             lag = time.time() - it["published_ts"]
             log.info("Событие [%s, imp %d, %s, %s] задержка %.0fс: %s", ev["event_type"], ev["importance"],
@@ -538,6 +539,22 @@ class Bot:
                         extra.append(pick[0])
         universe = universe + extra[:5]    # бережём лимиты брокера и внимание: ~12 ликвидных бумаг + до 5 по новостям
         self.evaluate(universe, equity, positions, tag="скан")
+
+    def _note_unknown_tickers(self, ev):
+        """Тикер из ответа модели, которого нет на бирже, — новость ни к одной бумаге не привяжется. Пишем в журнал
+        (не чаще раза в сутки на тикер), чтобы такие случаи было видно и таблицу llm.ticker_alias можно было дополнить."""
+        try:
+            bases = getattr(self, "_known_bases", None)
+            if bases is None or time.time() - self._known_bases_ts > 6 * 3600:
+                bases = self._known_bases = {i["base"] for i in self.ex.instruments().values()}
+                self._known_bases_ts = time.time()
+            seen = self.__dict__.setdefault("_unknown_seen", {})
+            for x in ev.get("affected_symbols") or []:
+                if x not in bases and time.time() - seen.get(x, 0) > 86400:
+                    seen[x] = time.time()
+                    log.warning("тикер %s из разбора новости не найден на бирже: новость к бумаге не привязана (добавить в llm.ticker_alias?)", x)
+        except Exception as e:  # noqa: BLE001
+            log.debug("проверка тикеров: %s", e)
 
     def _news_pick(self, base, syms, inst):
         """Одна бумага на компанию из новости. На Мосбирже выбор делает биржевой модуль: стоп-лист, срок до экспирации

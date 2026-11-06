@@ -339,6 +339,13 @@ markets:
       article_max_chars_economy: 1200
       cheap_sources: [lenta_econ, forbes, smartlab, gazeta_biz, ria, izvestia, tass_econ, "tg:profitgate", "tg:MarketOverview", "tg:investingcorp",
                       "tg:divonline", "tg:selfinvestor", "tg:bitkogan", "tg:truecon", "tg:headlines_for_traders"]
+      # как модель иногда называет бумагу -> тикер на бирже. 06.11: «CIAN» вместо CNRU, новость к Циану не привязалась
+      ticker_alias: {CIAN: CNRU, ЦИАН: CNRU, TCSG: T, TCS: T, TINKOFF: T, YNDX: YDEX, YANDEX: YDEX, FIVE: X5, X5RG: X5,
+                     HHRU: HEAD, HH: HEAD, VK: VKCO, VKCOM: VKCO, MTS: MTSS, LSR: LSRG, RUSAL: RUAL, POLY: PLZL, POLYUS: PLZL,
+                     SBERBANK: SBER, GAZPROM: GAZP, LUKOIL: LKOH, ROSNEFT: ROSN, NOVATEK: NVTK, NORNICKEL: GMKN, MAGNIT: MGNT,
+                     AEROFLOT: AFLT, SAMOLET: SMLT, SOVCOMBANK: SVCB, ALROSA: ALRS, SEVERSTAL: CHMF, TATNEFT: TATN, MECHEL: MTLR,
+                     SISTEMA: AFKS, ROSTELECOM: RTKM, INTERRAO: IRAO, PHOSAGRO: PHOR, MVIDEO: MVID, SEGEZHA: SGZH, POSITIVE: POSI,
+                     ASTRA: ASTR, WHOOSH: WUSH, FIXP: FIXR, VTB: VTBR, PIK: PIKK, NLMK: NLMK, MMK: MAGN, SELIGDAR: SELG}
       market_notes: |
         Рынок: Московская биржа, акции и фьючерсы в рублях, торговля на часы. В affected_symbols указывай тикеры
         Мосбиржи (SBER, GAZP, LKOH, ROSN, NVTK, GMKN, YDEX, TATN, VTBR, MGNT, PLZL, CHMF, NLMK, MTSS, ALRS, MOEX,

@@ -13,6 +13,18 @@ from pydantic import BaseModel
 
 log = logging.getLogger("analyst")
 
+
+def normalize_tickers(symbols, alias=None, limit=10):
+    """Тикеры из ответа модели -> тикеры биржи: верхний регистр, без # и $, замена по таблице, без повторов."""
+    alias = {str(k).upper(): str(v).upper() for k, v in (alias or {}).items()}
+    out = []
+    for x in symbols or []:
+        x = str(x).upper().strip().lstrip("#$")
+        x = alias.get(x, x)
+        if x and x not in out:
+            out.append(x)
+    return out[:limit]
+
 # USD за 1M токенов (вход, выход). Источник: прайс Anthropic на октябрь 2026.
 PRICES = {
     "claude-opus-5-5": (4.0, 20.0), "claude-sonnet-5-5": (2.0, 10.0), "claude-haiku-5-5": (0.10, 0.50),
@@ -66,7 +78,8 @@ SYSTEM_NEWS_MOEX = """Ты аналитик российского фондов�
 - если новость пересказывает уже известное или ожидаемое событие, ставь already_priced = true;
 - если это слух, скриншот, неподтверждённое сообщение или источник ненадёжен, ставь is_rumor = true и снижай confidence;
 - affected_symbols: только тикеры Мосбиржи (SBER, GAZP, LKOH, ROSN, NVTK, GMKN, YDEX, TATN, VTBR, MGNT, PLZL, CHMF, NLMK,
-  MTSS, ALRS, MOEX, OZON, T, AFLT, SNGS, X5, RUAL, PIKK, SMLT, NMTP, FLOT, IRAO, FEES, HYDR, UPRO, PHOR и другие),
+  MTSS, ALRS, MOEX, OZON, T, AFLT, SNGS, X5, RUAL, PIKK, SMLT, NMTP, FLOT, IRAO, FEES, HYDR, UPRO, PHOR, VKCO, POSI,
+  CNRU (Циан), HEAD (Хэдхантер), SVCB, AFKS, SIBN, MAGN, MTLR, SELG, MVID, BSPB, RTKM и другие — ровно как тикер на бирже),
   которые реально затронуты, не больше четырёх. Не выдумывай тикеры и не перечисляй весь сектор ради полноты;
 - market_wide = true для событий на весь рынок: ставка и риторика ЦБ, инфляция, бюджет, санкции против страны, геополитика,
   курс рубля, нефть. Такие новости не называй по бумагам, ставь флаг;
@@ -360,7 +373,9 @@ class Analyst:
         if d["is_rumor"]:
             d["confidence"] *= 0.6
         d["horizon_hours"] = max(1, min(96, int(d["horizon_hours"])))
-        d["affected_symbols"] = [s.upper().strip() for s in d["affected_symbols"] if s.strip()][:10]
+        # Модель иногда называет бумагу не биржевым тикером (06.11: CIAN вместо CNRU — новость к Циану не привязалась).
+        # Приводим к тикерам Мосбиржи по таблице llm.ticker_alias и убираем повторы
+        d["affected_symbols"] = normalize_tickers(d["affected_symbols"], self.s.get("llm.ticker_alias"))
         d["contrarian_risk"] = max(0.0, min(1.0, float(d.get("contrarian_risk") or 0.0)))
         d["surprise"] = max(-1.0, min(1.0, float(d.get("surprise") or 0.0)))
         d["expected"] = (d.get("expected") or "")[:200]

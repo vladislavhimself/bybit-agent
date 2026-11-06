@@ -105,17 +105,17 @@ class Executor:
                 self.ex.set_leverage(sig.symbol, lev)
                 order_id = self.ex.place_market(sig.symbol, side, qty, sl=stop)
             except Exception as ex:  # noqa: BLE001
-                log.error("%s: ошибка открытия: %s", sig.symbol, ex)
-                if "Not enough balance" in str(ex):
-                    if time.time() - getattr(self, "_balance_warn_ts", 0) > 7200:
-                        self._balance_warn_ts = time.time()
-                        self.tg.send(fmt.block("ℹ️ Песочница: нет свободных денег под новую позицию", f"{fmt.esc(fmt.label(sig.symbol))} {sig.direction}: пропускаю; повторю такие предупреждения не чаще раза в 2 часа"), html=True)
-                    return None
-                self.tg.send("\n\n".join([fmt.block("⚠️ Не удалось открыть", f"{fmt.esc(fmt.label(sig.symbol))} {sig.direction}"),
-                                           fmt.block("Ошибка", fmt.esc(str(ex)[:160]))]), html=True)
-                return None
-            sig.reasons.append("вход по рынку: " + why)
-            return self._finish_entry(sig, ta["atr"], dist, lev, order_id, equity, price, qty)
+                if "30049" in str(ex) or "Order book is empty" in str(ex):
+                    # 06.11 Циан: бумага на планке, продавцов в стакане нет — рыночная заявка невозможна. Бот через 16 секунд
+                    # стучался по рынку ещё раз и слал две одинаковые ошибки. Теперь сразу ставит лимитную заявку: она стоит
+                    # в стакане и исполнится, если цена откатит; повторных рыночных попыток нет (по бумаге уже есть ордер).
+                    log.warning("%s: стакан пуст (цена на планке), по рынку войти нельзя: ставлю лимитную заявку", sig.symbol)
+                    mode, why = "pullback", "стакан пуст (цена на планке), по рынку войти нельзя"
+                else:
+                    return self._order_failed(sig, ex, "Не удалось открыть")
+            if mode == "market":
+                sig.reasons.append("вход по рынку: " + why)
+                return self._finish_entry(sig, ta["atr"], dist, lev, order_id, equity, price, qty)
 
         # --- вход на откате: лимитный ордер ниже/выше рынка ---
         # по свежей новости рынок часто уходит без отката: ждём неглубокий откат
@@ -130,15 +130,7 @@ class Executor:
             self.ex.set_leverage(sig.symbol, lev)
             order_id = self.ex.place_limit(sig.symbol, side, qty, limit, reduce_only=False)
         except Exception as ex:  # noqa: BLE001
-            log.error("%s: ошибка лимитного ордера: %s", sig.symbol, ex)
-            if "Not enough balance" in str(ex):
-                if time.time() - getattr(self, "_balance_warn_ts", 0) > 7200:
-                    self._balance_warn_ts = time.time()
-                    self.tg.send(fmt.block("ℹ️ Песочница: нет свободных денег под новую позицию", f"{fmt.esc(fmt.label(sig.symbol))} {sig.direction}: пропускаю; повторю такие предупреждения не чаще раза в 2 часа"), html=True)
-                return None
-            self.tg.send("\n\n".join([fmt.block("⚠️ Не удалось выставить ордер", f"{fmt.esc(fmt.label(sig.symbol))} {sig.direction}"),
-                                       fmt.block("Ошибка", fmt.esc(str(ex)[:160]))]), html=True)
-            return None
+            return self._order_failed(sig, ex, "Не удалось выставить ордер")
         wait = int(e.get("wait_minutes", 90))
         sig.reasons.append("вход на откате: " + why)
         payload = self._sig_payload(sig, ta)
@@ -155,6 +147,18 @@ class Executor:
             fmt.block("Почему", *[fmt.esc(x) for x in fmt.short_reasons(sig, ta)]),
         ]), html=True)
         return -1
+
+    def _order_failed(self, sig, ex, title):
+        """Заявка не принята: в журнал и владельцу. Нехватка денег песочницы — сообщение не чаще раза в 2 часа."""
+        log.error("%s: ошибка заявки: %s", sig.symbol, ex)
+        if "Not enough balance" in str(ex):
+            if time.time() - getattr(self, "_balance_warn_ts", 0) > 7200:
+                self._balance_warn_ts = time.time()
+                self.tg.send(fmt.block("ℹ️ Песочница: нет свободных денег под новую позицию", f"{fmt.esc(fmt.label(sig.symbol))} {sig.direction}: пропускаю; повторю такие предупреждения не чаще раза в 2 часа"), html=True)
+            return None
+        self.tg.send("\n\n".join([fmt.block(f"⚠️ {title}", f"{fmt.esc(fmt.label(sig.symbol))} {sig.direction}"),
+                                   fmt.block("Ошибка", fmt.esc(str(ex)[:160]))]), html=True)
+        return None
 
     def _mult(self, symbol):
         return float(self.ex.instruments().get(symbol, {}).get("mult") or 1.0)
