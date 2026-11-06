@@ -229,10 +229,18 @@ class CorpCalendar:
         lo, hi = int(c.get("pre_event_min_days", 3)), int(c.get("pre_event_max_days", 20))
         have = {r["event_id"] for r in self.j._run("SELECT event_id FROM pre_event", (), "all")}
         opened_bases = {r["base"] for r in self.j._run("SELECT base FROM pre_event WHERE status='open'", (), "all")}
+        # только бумаги, которыми бот реально торгует: не из стоп-листа и с оборотом не ниже порога списка
+        # (иначе статистика теней наберётся на неликвиде вроде «Базиса», куда бот всё равно не войдёт)
+        ucfg = self.s.get("universe") or {}
+        black = set(ucfg.get("blacklist") or [])
+        min_t = float(ucfg.get("min_turnover_24h_usd") or 0)
+        turn = getattr(self.ex, "_turn_cache", None) or {}
         for ev in self.upcoming(hi):
             days_left = (datetime.strptime(ev["date"], "%Y-%m-%d").date() - today).days
             if ev["id"] in have or ev["kind"] not in TRADE_KINDS or days_left < lo or ev["base"] in opened_bases:
                 continue
+            if ev["base"] in black or (min_t and float(turn.get(ev["base"]) or 0) < min_t):
+                continue      # оборот неизвестен (срез ещё не посчитан) или мал — не берём
             try:
                 d = self._daily(ev["base"])
                 di = self._daily(index)
