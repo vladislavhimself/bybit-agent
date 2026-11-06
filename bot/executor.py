@@ -28,6 +28,7 @@ class Executor:
         self.s, self.ex, self.risk, self.j, self.tg = settings, exchange, risk, journal, tg
         self.lock = threading.RLock()
         self._miss, self._tp_checked, self._pyr_checked, self._close_log, self._alerts = {}, {}, {}, {}, {}
+        self._shock_checked = {}
         self._sma_cache, self._sma_bad = {}, {}
         self._audit_ts = self._recon_ts = 0.0
         self.last_deferred = 0
@@ -440,6 +441,9 @@ class Executor:
                 return self._close_now(t, f"дневной тренд сломан: закрытие {last_close:g} за 20-дневной средней {sma:g}")
             if hours >= float(r.get("max_hours_daily_exit", 720)) and r_now < 0.5:
                 return self._close_now(t, f"тайм-стоп {hours:.0f}ч (дневной режим), R={r_now:.2f}")
+        # шок на новости по бумаге: цена резко пошла против позиции — сокращаем риск, не дожидаясь исходного стопа
+        if self._news_shock(t, pos, r, long, sign, mark, e0, risk_dist, r_now) == "closed":
+            return True
         # программный стоп: подстраховка, если стоп-заявка на бирже не сработала (или её нет)
         if r.get("soft_stops") and ((long and mark <= t["stop"]) or (not long and mark >= t["stop"])):
             return self._close_now(t, f"стоп {t['stop']:g} (программный)")
@@ -520,6 +524,47 @@ class Executor:
                 and not (t.get("cut_qty") or 0) and r_now >= float(r.get("pyramid_r", 1.5)) and hours >= 1):
             self._pyramid(t, pos, pyr, long, mark)
         return False
+
+    def _news_shock(self, t, pos, r, long, sign, mark, e0, risk_dist, r_now):
+        """Защита открытой позиции от шока. Условие: за последние минуты вышла новость по этой компании (в любую сторону:
+        06.11 дивиденды X5 модель оценила как позитив, а бумага упала на 3% за три минуты) И цена за это время ушла против
+        позиции на shock_atr ATR и больше. Действие осторожное: позиция была в плюсе — стоп в безубыток; иначе оставшийся риск
+        режется вдвое. Не выход по рынку: по архиву новостей после резкой реакции цена чаще частично откатывает."""
+        c = r.get("news_shock") or {}
+        if not c.get("enabled") or not t.get("atr"):
+            return None
+        now = time.time()
+        if now - self._shock_checked.get(t["id"], 0) < 60:
+            return None
+        self._shock_checked[t["id"]] = now
+        base = self._company((self.ex.instruments().get(t["symbol"]) or {}).get("base") or t["symbol"])
+        window = float(c.get("event_minutes", 30)) * 60
+        fresh = [e for e in self.j.recent_events(1) if now - e["ts"] <= window and e["importance"] >= int(c.get("min_importance", 5))
+                 and base in {self._company(a) for a in (e.get("affected") or [])}]
+        if not fresh:
+            return None
+        try:
+            d = self.ex.klines(t["symbol"], "5", int(c.get("bars", 6)))
+            ref = float(d["high"].max()) if long else float(d["low"].min())
+        except Exception:  # noqa: BLE001
+            return None
+        adverse = (ref - mark) * sign / float(t["atr"])
+        if adverse < float(c.get("shock_atr", 1.5)):
+            return None
+        if r_now > 0:
+            new_stop, what = e0 * (1 + 0.0015 * sign), "стоп в безубыток"
+        else:
+            new_stop, what = e0 - sign * 0.5 * risk_dist, "риск вдвое меньше"
+        if (long and new_stop >= mark) or (not long and new_stop <= mark):
+            return None   # цена уже за новым уровнем: по рынку на дне шока не выходим, остаётся исходный стоп
+        res = self._move_stop(t, new_stop, f"шок на новости ({adverse:.1f} ATR против позиции): {what}", mark)
+        if res:
+            self._alert_once(f"shock:{t['id']}", 6 * 3600, "\n\n".join([
+                f"🛡 <b>ШОК НА НОВОСТИ</b>: {fmt.esc(fmt.label(t['symbol']))} {'ЛОНГ' if long else 'ШОРТ'}",
+                fmt.block("Что случилось", f"Цена за минуты ушла против позиции на {adverse:.1f} ATR", fmt.esc((fresh[0].get('title') or '')[:140])),
+                fmt.block("Что сделал", "Закрыл позицию по рынку: новый уровень стопа уже пройден" if res == "closed"
+                          else f"Подтянул стоп до {new_stop:g}: {what}")]))
+        return res
 
     def _refresh_tps(self, t, pos, long):
         """Лимитные заявки у брокера живут до конца торгового дня: тейк, выставленный вечером, ночью сгорает.

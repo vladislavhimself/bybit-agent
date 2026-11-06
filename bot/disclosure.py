@@ -21,6 +21,36 @@ UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.3
 HOT = re.compile(r"дивиденд|решени[яе] совета директоров|существенное влияние|отчетн|отчётн|приобретени|выкуп|"
                  r"дополнительн\w+ (выпуск|акци)|реорганизац|крупн\w+ сделк|рейтинг|дефолт|прекращени|заявк|"
                  r"финансов\w+ результат|прибыл|убыт|купон|оферт", re.I)
+# Суть раскрытия стоит не в начале: у решения совета директоров сначала кворум и итоги голосования. 06.11 в сообщении X5
+# слово «дивиденд» было на 732-м символе, сумма — на 990-м; фильтр видел первые 300 и отбрасывал сообщение.
+DIV_AMT = re.compile(r"дивиденд[^.;]{0,260}?в размере\s+(\d[\d\s\xa0]*(?:[.,]\d+)?)\s*(?:\([^)]{0,80}\))?\s*руб", re.I)
+DIV_NONE = re.compile(r"(не выплачивать|не объявлять|не распределять)[^.;]{0,80}дивиденд|дивиденд[^.;]{0,120}(не выплачивать|не объявлять)", re.I)
+DIV_PERIOD = re.compile(r"по (?:результатам|итогам)\s+((?:[\w\d]+\s+){0,3}?20\d\d\s*года?)", re.I)
+KEYS = re.compile(r"дивиденд|выкуп|оферт|приобретени|дополнительн\w+ выпуск|реорганизац|чист\w+ прибыл|выручк|крупн\w+ сделк", re.I)
+
+
+def essence(body):
+    """(добавка к заголовку, текст с сутью в начале, дивиденд на акцию или None). Без модели, по тексту раскрытия."""
+    txt = body or ""
+    add, div = "", None
+    m = DIV_AMT.search(txt)
+    if m:
+        try:
+            div = float(re.sub(r"[\s\xa0]", "", m.group(1)).replace(",", "."))
+        except ValueError:
+            div = None
+    if div:
+        p = DIV_PERIOD.search(txt[max(0, m.start() - 20):m.end()]) or DIV_PERIOD.search(txt)
+        add = f"дивиденды {div:g} руб. на акцию" + (f" по итогам {' '.join(p.group(1).split())}" if p else "")
+    elif DIV_NONE.search(txt):
+        add = "дивиденды не выплачивать"
+    k = KEYS.search(txt)
+    if k and k.start() > 250:
+        i = max(0, k.start() - 150)
+        txt = "Суть: " + txt[i:i + 900] + " ... Полный текст: " + txt
+    return add, txt, div
+
+
 STRIP = re.compile(r"\b(ПАО|ОАО|АО|ООО|публичное акционерное общество|акционерное общество|открытое|"
                    r"общество с ограниченной ответственностью)\b|[«»\"']", re.I)
 
@@ -104,10 +134,10 @@ class Disclosure:
             base = self._match(issuer)
             if not base or not HOT.search(title):
                 continue
-            body = self._page(BASE + href)
+            add, body, div = essence(self._page(BASE + href))
             items.append({"id": hashlib.sha1(href.encode()).hexdigest()[:16], "source": "disclosure",
-                          "title": f"{_norm(issuer).title()} ({base}): {title}", "summary": body or title,
-                          "url": BASE + href, "published_ts": int(ts)})
+                          "title": f"{_norm(issuer).title()} ({base}): {title}" + (f" — {add}" if add else ""),
+                          "summary": body or title, "url": BASE + href, "published_ts": int(ts), "base": base, "div": div})
             log.info("Раскрытие %s: %s", base, title[:80])
         if self.first:
             self.first = False

@@ -226,7 +226,12 @@ class Bot:
                     break
             try:
                 # киты и источники без модели — по одной; остальные — один вызов фильтра на всю пачку
-                plain = [it for it in batch if it["source"] not in whale_srcs]
+                plain = [it for it in batch if it["source"] not in whale_srcs and it["source"] != "disclosure"]
+                for it in batch:
+                    if it["source"] == "disclosure":
+                        # официальное раскрытие уже отобрано по эмитенту и типу сообщения: идёт к разбору сразу, без дешёвого
+                        # фильтра (он видел первые 300 символов — кворум и голосование — и отбрасывал решения о дивидендах)
+                        self._analyze_item(it, prefiltered=True)
                 for it in batch:
                     if it["source"] in whale_srcs:
                         self._analyze_item(it)
@@ -262,6 +267,14 @@ class Bot:
                     full = article.fetch_text(it.get("url"))
                     if full:
                         body = full   # статья целиком: направление часто ясно только из тела, а не из заголовка
+                if it["source"] == "disclosure" and it.get("div") and it.get("base"):
+                    try:   # сумма дивиденда извлечена правилом: добавляем цену и доходность, чтобы модель оценивала цифру, а не текст
+                        px = float(self.ex.last_price(it["base"]) or 0)
+                        if px > 0:
+                            body = (f"Дивиденд {it['div']:g} руб. на акцию; цена акции сейчас {px:g} руб., "
+                                    f"дивидендная доходность {it['div'] / px * 100:.1f}%. ") + body
+                    except Exception:  # noqa: BLE001
+                        pass
                 ev = self.analyst.classify(it["title"], body, it["source"], self._lessons())
             if not ev or not ev["relevant"]:
                 return
