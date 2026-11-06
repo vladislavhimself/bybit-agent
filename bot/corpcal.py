@@ -228,6 +228,8 @@ class CorpCalendar:
         scope = (ev.get("future_event_scope") or "").strip().lower()
         syms = [x for x in (ev.get("affected_symbols") or []) if x in self.bases()][:2]
         if scope == "market" or (ev.get("market_wide") and scope != "company") or (not syms and kind in ("geo", "sanctions", "cb", "fed", "opec", "macro", "speech", "index")):
+            if kind not in ("geo", "sanctions", "cb", "fed", "opec", "macro", "speech", "index", "expiry"):
+                return 0      # событие компании без тикера (собрание, отчёт) к рынку в целом не относится
             return int(self.add(MARKET, ds, kind, title, f"модель/{source}", expect))
         if scope == "sector":
             sectors = self.s.get("risk.sectors") or {}
