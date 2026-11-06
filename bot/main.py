@@ -603,7 +603,7 @@ class Bot:
             log.debug("опережение рынка %s: %s", symbol, e)
             return None
 
-    def step_corpcal(self, positions):
+    def step_corpcal(self):
         """Календарь событий: тени «на ожидании» и защита лонга накануне события. Если завтра или сегодня по компании
         ожидается событие, бумага перед ним обогнала рынок, а лонг в плюсе — стоп подтягивается на половину текущей
         прибыли: на факте, совпавшем с ожиданиями, такие бумаги продают."""
@@ -612,10 +612,13 @@ class Bot:
         thr = float(psy.get("runup_excess_pct") or 0)
         if not thr:
             return
-        pos = {p["symbol"]: p for p in positions}
-        for t in self.j.open_trades():
+        longs = [t for t in self.j.open_trades() if t["side"] == "Buy"]
+        if not longs:
+            return
+        pos = {p["symbol"]: p for p in self.ex.positions()}
+        for t in longs:
             p = pos.get(t["symbol"])
-            if t["side"] != "Buy" or not p:
+            if not p:
                 continue
             ev = self.corpcal.soon(self.risk.base_of(t["symbol"]), 1)
             if not ev or self._pre_event_done.get(t["id"]) == ev["id"]:
@@ -1100,7 +1103,7 @@ class Bot:
                 if self.corpcal and now - self.last.get("corpcal", 0) >= 600:
                     self.last["corpcal"] = now
                     try:
-                        self.step_corpcal(positions)
+                        self.step_corpcal()
                     except Exception as e:  # noqa: BLE001
                         log.warning("календарь событий: %s", e)
                 if self.divcal and time.time() - self.divcal.ts > 6 * 3600:
