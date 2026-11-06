@@ -64,11 +64,6 @@ class MoexExchange:
         self._turn_cache, self._turn_ts, self._iss_down_until, self._turn_thread = {}, 0.0, 0.0, None
         self._realized, self._realized_ts = 0.0, 0.0
         self._px = {}   # последние цены инструментов (заполняются сканом): нужны, чтобы не брать в список контракт, который не открыть
-        # Песочница списывает с денег полную стоимость позиции (ГО не знает): чтобы помещалось несколько позиций, как на
-        # реальном счёте с плечом, добавлено виртуальное обеспечение. Оно вычитается из капитала в balances(): прибыль,
-        # убыток и торговый капитал считаются так, будто его нет. Сумма хранится в файле рядом с номером счёта.
-        self._buffer_file = DATA / f"moex_buffer_{self.mode}.txt"
-        self._buffer = self._buffer_paid()
         self._ensure_account()
         if not net.relay_enabled() and not net.ru_proxy():   # напрямую из-за границы: держим соединение тёплым; через ретранслятор не нужно
             threading.Thread(target=self._keepalive, daemon=True, name="tinvest-keepalive").start()
@@ -117,12 +112,6 @@ class MoexExchange:
             self.account = cache.read_text(encoding="utf-8").strip()
             log.error("T-Invest недоступен при старте (%s), счёт %s из кэша", str(e)[:100], self.account)
 
-    def _buffer_paid(self):
-        try:
-            return float(self._buffer_file.read_text(encoding="utf-8").strip() or 0) if self.mode != "live" and self._buffer_file.exists() else 0.0
-        except (OSError, ValueError):
-            return 0.0
-
     def _ensure_account_online(self):
         if self.mode == "live":
             accs = self.call("UsersService", "GetAccounts").get("accounts", [])
@@ -143,14 +132,6 @@ class MoexExchange:
                 self.call("SandboxService", "SandboxPayIn", {"accountId": self.account,
                                                              "amount": {"currency": "rub", "units": str(int(start)), "nano": 0}})
                 log.info("Песочница пополнена на %.0f руб", start)
-            want = float(self.s.get("moex.sandbox_buffer_rub") or 0)
-            if want > self._buffer:
-                add = want - self._buffer
-                self.call("SandboxService", "SandboxPayIn", {"accountId": self.account,
-                                                             "amount": {"currency": "rub", "units": str(int(add)), "nano": 0}})
-                self._buffer_file.write_text(str(int(want)), encoding="utf-8")
-                self._buffer = want
-                log.warning("Песочница: добавлено виртуальное обеспечение %.0f руб (всего %.0f); в капитал и результат не входит", add, want)
         log.info("T-Invest %s, счёт %s", "песочница" if self.mode != "live" else "БОЕВОЙ", self.account)
 
     # ---------- инструменты ----------
@@ -551,11 +532,9 @@ class MoexExchange:
         # Проверено по операциям песочницы 22.10: деньги = пополнение + платежи по акциям + комиссии + вариационная
         # маржа (списывается при клиринге в 21:00). Платежи по фьючерсам в деньги не попадают, а их стоимость
         # в totalAmountPortfolio — фикция. Поэтому капитал = деньги + акции по рынку + вармаржа открытых фьючерсов.
-        # виртуальное обеспечение песочницы в капитал не входит: вычитаем его, свободные деньги (available) — с ним
-        equity = cash + shares + fut_upnl - self._buffer
+        equity = cash + shares + fut_upnl
         upnl = fut_upnl + shares_upnl
-        return {"equity": equity, "wallet": equity - upnl, "unrealised": upnl, "available": cash, "total_equity": equity,
-                "buffer": self._buffer}
+        return {"equity": equity, "wallet": equity - upnl, "unrealised": upnl, "available": cash, "total_equity": equity}
 
     def _realized_futures(self, portfolio):
         """Песочница: сумма платежей по сделкам с фьючерсами плюс стоимость открытых контрактов по цене входа

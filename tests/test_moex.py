@@ -1,4 +1,4 @@
-"""Модуль брокера без сети: порядок перестановки стоп-заявки и виртуальное обеспечение песочницы."""
+"""Модуль брокера без сети: порядок перестановки стоп-заявки и расчёт капитала."""
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -22,7 +22,7 @@ class S:
 
 def make(stops, fail_post=0, fail_list=False):
     ex = MoexExchange.__new__(MoexExchange)
-    ex.s, ex.account, ex.mode, ex._buffer = S({}), "acc", "demo", 0.0
+    ex.s, ex.account, ex.mode = S({}), "acc", "demo"
     ex.calls = []
     ex._stops = [dict(s) for s in stops]
     ex.instruments = lambda: {"GAZPF": {"uid": "u1", "figi": "f1", "tick": Decimal("0.01"), "mult": 100.0, "lot": 1, "kind": "future"}}
@@ -86,41 +86,13 @@ except RuntimeError:
     pass
 print("стопа не было и новый не принят: исключение (вызывающий повторит)")
 
-# ---- виртуальное обеспечение песочницы: в капитал не входит ----
-tmp = Path(tempfile.mkdtemp())
+# ---- капитал = деньги + бумаги по рынку, без скрытых вычитаний ----
 ex = MoexExchange.__new__(MoexExchange)
-ex.s, ex.account, ex.mode = S({"moex": {"sandbox_buffer_rub": 200000, "sandbox_start_rub": 100000}}), "acc", "demo"
-ex._buffer_file = tmp / "moex_buffer_demo.txt"
-ex._buffer = ex._buffer_paid()
+ex.s, ex.account, ex.mode = S({}), "acc", "demo"
 ex._figi2sym, ex._uid2sym = {}, {}
 ex.instruments = lambda: {}
-cash = {"v": 95705.0}
-payins = []
-
-
-def call2(svc, method, body=None, retries=8):
-    if method == "GetSandboxAccounts":
-        return {"accounts": [{"id": "acc", "status": "ACCOUNT_STATUS_OPEN"}]}
-    if method == "GetPortfolio":
-        return {"totalAmountPortfolio": {"units": str(int(cash["v"])), "nano": 0},
-                "positions": [{"instrumentType": "currency", "quantity": {"units": str(int(cash["v"])), "nano": 0}}]}
-    if method == "SandboxPayIn":
-        payins.append(int(body["amount"]["units"])); cash["v"] += int(body["amount"]["units"]); return {}
-    raise AssertionError(method)
-
-
-ex.call = call2
-before = ex.balances()
-ex._ensure_account_online()
-after = ex.balances()
-print(f"до пополнения: капитал {before['equity']:.0f}, свободно {before['available']:.0f}; после: капитал {after['equity']:.0f}, свободно {after['available']:.0f}, обеспечение {after['buffer']:.0f}")
-assert payins == [200000] and after["equity"] == before["equity"] == 95705.0 and after["wallet"] == before["wallet"]
-assert after["available"] == 295705.0 and ex._buffer_file.read_text() == "200000"
-ex._ensure_account_online()                      # повторный запуск: второй раз не пополняет
-assert payins == [200000]
-ex2 = MoexExchange.__new__(MoexExchange)
-ex2.s, ex2.account, ex2.mode, ex2._buffer_file = ex.s, "acc", "demo", ex._buffer_file
-ex2._buffer = ex2._buffer_paid(); ex2._figi2sym, ex2._uid2sym = {}, {}; ex2.instruments = lambda: {}; ex2.call = call2
-assert ex2.balances()["equity"] == 95705.0       # после перезапуска сумма читается из файла
-print("капитал и прибыль не изменились ни на рубль; повторного пополнения нет; после перезапуска то же")
+ex.call = lambda svc, method, body=None, retries=8: {"positions": [{"instrumentType": "currency", "quantity": {"units": "295594", "nano": 710000000}}]}
+b = ex.balances()
+assert abs(b["equity"] - 295594.71) < 1e-6 and abs(b["available"] - 295594.71) < 1e-6 and "buffer" not in b
+print("капитал равен деньгам на счёте: 295 594.71, вычитаний нет")
 print("ВСЁ ОК")

@@ -603,7 +603,6 @@ class Bot:
         self.tg.send(fmt.balance_message(equity, m, positions, self.j.stats(), float(self.s.get("risk.capital_cap_usd") or 0),
                                          llm, self.cal.next_high(), self.xstream.status() if self.xstream else None,
                                          pendings=self.j.pendings(),
-                                         sandbox_buffer=float(getattr(self.ex, "_buffer", 0) or 0),
                                          now_lines=self._now_lines(positions),
                                          shadow_line=self.shadow.summary_text(7, top=3),
                                          why_none=fmt.funnel_text(self.funnel_since_report, self.best_weak_since_report,
