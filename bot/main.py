@@ -40,7 +40,7 @@ from .tg_live import TelegramLive
 from .driver import DriverCheck
 from .factors import Factors
 from .corpcal import KIND_RU, MARKET as CAL_MARKET, CorpCalendar
-from .theme import ClusterWatch, MarketTheme
+from .theme import ClusterWatch, MarketTheme, SentNews
 from .divcal import DivCalendar
 from .walkforward import WalkForward
 from .signals import build_signal
@@ -111,6 +111,7 @@ class Bot:
         self.theme = MarketTheme(self.s, self.j, self.analyst, self.corpcal, self._index_move) if self.analyst and (self.s.get("theme") or {}).get("enabled") else None
         self.clusters = ClusterWatch(self.s, self._index_move) if (self.s.get("clusters") or {}).get("enabled") else None
         self._theme_now = False
+        self.sent_news = SentNews(self.s, self.j)     # что уже писали в Telegram: повторы одной новости не шлём
         self.exe.driver = (DriverCheck(self.s, self.analyst, self.j, self.ex)
                            if self.analyst and (self.s.get("risk.driver_check") or {}).get("mode") else None)
         self.reviewer = Reviewer(self.s, self.j, self.tg) if self.s.has_anthropic else None
@@ -331,12 +332,15 @@ class Bot:
                         self.events_q.put(syn)
                         self._theme_now = True     # главный цикл пересчитает тему рынка сразу
                         d = {"bullish": "позитив", "bearish": "негатив", "neutral": "сторона неясна"}[syn["direction"]]
-                        self.tg.send("\n\n".join([f"📣 <b>СЕРИЯ НОВОСТЕЙ</b> — {syn['n']} сообщений об одном за полчаса",
-                                                   fmt.block("О чём", fmt.esc(syn["title"][16:])),
-                                                   fmt.block("Оценка", f"Считаю одним событием важности 8 ({d}): стопы встречных позиций подтягиваю, тему рынка пересчитываю")]), html=True)
+                        if not self.sent_news.repeat([], "cluster", syn["direction"], syn["title"][16:]):
+                            self.tg.send("\n\n".join([f"📣 <b>СЕРИЯ НОВОСТЕЙ</b> — {syn['n']} сообщений об одном за полчаса",
+                                                       fmt.block("О чём", fmt.esc(syn["title"][16:])),
+                                                       fmt.block("Оценка", f"Считаю одним событием важности 8 ({d}): стопы встречных позиций подтягиваю, тему рынка пересчитываю")]), html=True)
                 except Exception as e:  # noqa: BLE001
                     log.warning("серии новостей: %s", e)
-            if ev["importance"] >= 8:
+            if ev["importance"] >= 8 and self.sent_news.repeat(ev["affected_symbols"], ev["event_type"], ev["direction"], it["title"]):
+                log.info("важная новость уже была в Telegram, повтор не шлю: %s", it["title"][:90])
+            elif ev["importance"] >= 8:
                 d = {"bullish": "позитив", "bearish": "негатив", "neutral": "нейтрально"}[ev["direction"]]
                 parts = [f"📰 <b>ВАЖНАЯ НОВОСТЬ</b> — {fmt.RU_TYPE.get(ev['event_type'], 'событие')}, важность {ev['importance']}/10",
                          fmt.block("Новость", fmt.esc(fmt.clean(it['title'], 200))),

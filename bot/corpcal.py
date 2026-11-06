@@ -41,7 +41,11 @@ EXPECT_DEFAULT = {"geo": "hope", "dividend": "hope", "buyback": "hope", "sanctio
 MARKET = "MARKET"
 # (вид, ожидание, шаблон). Ожидание «надежда» — только у мирных переговоров и перемирия: саммит ЕС или встреча лидеров сами по себе
 # шортам не мешают. Санкции — только пакет, введение, вступление в силу, ультиматум и дедлайн (слово «санкции» есть в каждой второй новости).
-M_RULES = [("geo", "hope", re.compile(r"переговор|перемири|мирн\w+ (план|соглашен|урегулирован|договор|сделк)|прекращени\w+ огня", re.I)),
+# Разговор О переговорах — не переговоры: саммит, где «обсудят, кто будет представлять ЕС на переговорах» (13.11.2026), исход неизвестен.
+# Это правило стоит первым, иначе слово «переговоры» рядом с датой давало «ждут хорошего» и закрывало шорты на лишний день.
+M_UNSURE = re.compile(r"саммит|обсуд\w+[^.]{0,80}переговор|(вопрос|тем\w+|повестк\w+)\s[^.]{0,30}переговор", re.I)
+M_RULES = [("geo", "unknown", M_UNSURE),
+           ("geo", "hope", re.compile(r"переговор|перемири|мирн\w+ (план|соглашен|урегулирован|договор|сделк)|прекращени\w+ огня", re.I)),
            ("sanctions", "fear", re.compile(r"пакет\w* санкц|санкци\w* (вступ|введ|примут|принят|утверд)|(введ|вступ|примут|принят|утверд)\w* [^.]{0,30}санкци|ультиматум|дедлайн", re.I)),
            ("geo", "unknown", re.compile(r"саммит|встреч\w+ (лидер|президент|делегац|глав)|проведут встречу", re.I)),
            ("cb", "unknown", re.compile(r"(заседани\w+|решени\w+)[^.]{0,40}(Банка России|ЦБ РФ|\bЦБ\b)|по ключевой ставке", re.I)),
@@ -225,6 +229,8 @@ class CorpCalendar:
         kind = {"dividends": "dividend", "earnings": "report", "agm": "meeting", "egm": "meeting", "talks": "geo", "geopolitics": "geo",
                 "rate": "cb", "cbr": "cb", "fomc": "fed"}.get(kind, kind)
         expect = (ev.get("future_event_expect") or "").strip().lower()
+        if kind == "geo" and M_UNSURE.search(title or ""):
+            expect = "unknown"      # саммит или обсуждение переговоров: «ждут хорошего» не ставим, даже если так сказала модель
         scope = (ev.get("future_event_scope") or "").strip().lower()
         syms = [x for x in (ev.get("affected_symbols") or []) if x in self.bases()][:2]
         if scope == "market" or (ev.get("market_wide") and scope != "company") or (not syms and kind in ("geo", "sanctions", "cb", "fed", "opec", "macro", "speech", "index")):

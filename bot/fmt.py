@@ -155,16 +155,21 @@ def balance_message(equity, m, positions, stats, cap, llm=None, next_macro=None,
     if m["halted"] and halted_hint:
         parts.append(f"⛔ <b>Остановлен</b>: {esc(m['halt_reason'])}. /resume чтобы продолжить")
     if pendings:
-        parts.append(block("Ждут отката", *[f"• {esc(label(p['symbol']))} {'ЛОНГ' if p['side'] == 'Buy' else 'ШОРТ'} @ {p['price']:g}"
-                                            for p in pendings]))
+        parts.append(block("Ждут отката", *[f"{i}. {esc(label(p['symbol']))} {'ЛОНГ' if p['side'] == 'Buy' else 'ШОРТ'}, ордер по цене {p['price']:g}"
+                                            for i, p in enumerate(pendings, 1)]))
     if positions:
         lines = []
-        for p in positions:
+        # Формат задан владельцем 06.11.2026: номер и бумага; сторона; результат сейчас; цена, плечо, стоп. Без знака @.
+        for i, p in enumerate(positions, 1):
             side = "ЛОНГ" if p["side"] == "Buy" else "ШОРТ"
             notional = p["qty"] * p["entry"] * (p.get("mult") or 1.0)
             pct = f" ({p['upnl'] / notional * 100:+.2f}%)" if notional else ""
-            lines.append(f"• {esc(label(p['symbol']))} {side} {p['qty']:g} @ {p['entry']:g}")
-            lines.append(f"   сейчас {signed(p['upnl'])} {CUR}{pct}, цена {p['mark']:g}, плечо {p['leverage']:.1f}x, стоп {p['sl']:g}")
+            if i > 1:
+                lines.append(" ")       # пустая строка между позициями
+            lines.append(f"{i}. {esc(label(p['symbol']))}")
+            lines.append(side)
+            lines.append(f"{signed(p['upnl'])} {CUR}{pct}")
+            lines.append(f"Цена {p['mark']:g}, плечо {p['leverage']:.1f}x, стоп {p['sl']:g}")
         parts.append(block("Позиции", *lines))
     else:
         parts.append(block("Позиции", "открытых нет"))

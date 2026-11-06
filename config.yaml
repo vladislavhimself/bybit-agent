@@ -175,6 +175,7 @@ markets:
               unknown_before_min: 30, unknown_after_min: 15}
     # 07.11: главная тема рынка (модель раз в час и сразу после серии новостей); технические сделки против темы не открываются
     theme: {enabled: true, every_min: 60, min_confidence: 0.6, max_age_min: 180}
+    notify: {news_repeat_hours: 12}     # одна и та же новость (от разных каналов) в Telegram один раз за столько часов; 0 — выключить
     # серия: 5+ общерыночных новостей об одном за 30 минут = одно событие важности 8
     clusters: {enabled: true, window_min: 30, min_items: 5, quiet_min: 120}
     psychology:

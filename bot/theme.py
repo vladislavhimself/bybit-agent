@@ -53,6 +53,36 @@ def similar(a, b):
     return len(a & b) >= 2
 
 
+class SentNews:
+    """Что уже отправлено владельцу в Telegram: одна и та же новость приходит от десятка каналов (06.11.2026 покупка ЦИАН —
+    семь сообщений «ВАЖНАЯ НОВОСТЬ» подряд). Повтор — та же сторона и: общая бумага с тем же видом события, либо три общих
+    значимых слова, либо два, если бумаг нет (новость про рынок). Память в базе: перезапуск бота её не стирает.
+    На торговлю не влияет: событие разбирается и учитывается как раньше, не дублируется только сообщение."""
+    KEY = "tg_news_sent"
+
+    def __init__(self, settings, journal):
+        self.s, self.j, self.lock = settings, journal, threading.Lock()
+
+    def repeat(self, tickers, etype, direction, title, now=None):
+        """True — о том же уже писали за последние notify.news_repeat_hours часов (сообщение не нужно). Иначе запоминает и даёт False."""
+        hours = float(self.s.get("notify.news_repeat_hours", 12) or 0)
+        if hours <= 0:
+            return False
+        now = now or time.time()
+        tk, st = set(tickers or []), stems(title)
+        with self.lock:
+            sent = [x for x in (self.j.kv_get(self.KEY, []) or []) if now - x[0] <= hours * 3600]
+            for _, tk0, et0, d0, st0 in sent:
+                if d0 != direction:
+                    continue        # та же тема с другим знаком (сделка сорвалась) — новость, а не повтор
+                common = len(st & set(st0))
+                if (tk & set(tk0) and et0 == etype) or common >= 3 or (not tk and not tk0 and common >= 2):
+                    return True
+            sent.append([int(now), sorted(tk), etype, direction, sorted(st)])
+            self.j.kv_set(self.KEY, sent[-200:])
+        return False
+
+
 class ClusterWatch:
     """Серии общерыночных новостей об одном: min_items за window_min минут -> одно событие важности 8."""
     def __init__(self, settings, index_move=None):
