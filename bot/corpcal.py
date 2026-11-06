@@ -39,13 +39,18 @@ KIND_RU = {"dividend": "решение по дивидендам", "report": "о
 # fear — ждут плохого (зеркально), unknown — исход неизвестен (вход прямо перед событием — лотерея)
 EXPECT_DEFAULT = {"geo": "hope", "dividend": "hope", "buyback": "hope", "sanctions": "fear", "offering": "fear", "lockup": "fear"}
 MARKET = "MARKET"
-M_RULES = [("geo", re.compile(r"переговор|саммит|перемири|мирн\w+ (план|соглашен|урегулирован|договор)|встреч\w+ (лидер|президент|делегац)", re.I)),
-           ("sanctions", re.compile(r"санкци|ультиматум|дедлайн", re.I)),
-           ("cb", re.compile(r"(заседани\w+|решени\w+)[^.]{0,40}(Банка России|ЦБ РФ|\bЦБ\b)|по ключевой ставке", re.I)),
-           ("fed", re.compile(r"ФРС|FOMC", re.I)),
-           ("opec", re.compile(r"ОПЕК", re.I)),
-           ("speech", re.compile(r"послани\w+ (президент|Путин|Федеральному)|прямая линия|ПМЭФ|Валдай|ВЭФ", re.I)),
-           ("index", re.compile(r"(баз\w+ расч[её]та|пересмотр\w*|ребалансир\w+)[^.]{0,40}индекс", re.I))]
+# (вид, ожидание, шаблон). Ожидание «надежда» — только у мирных переговоров и перемирия: саммит ЕС или встреча лидеров сами по себе
+# шортам не мешают. Санкции — только пакет, введение, вступление в силу, ультиматум и дедлайн (слово «санкции» есть в каждой второй новости).
+M_RULES = [("geo", "hope", re.compile(r"переговор|перемири|мирн\w+ (план|соглашен|урегулирован|договор|сделк)|прекращени\w+ огня", re.I)),
+           ("sanctions", "fear", re.compile(r"пакет\w* санкц|санкци\w* (вступ|введ|примут|принят|утверд)|(введ|вступ|примут|принят|утверд)\w* [^.]{0,30}санкци|ультиматум|дедлайн", re.I)),
+           ("geo", "unknown", re.compile(r"саммит|встреч\w+ (лидер|президент|делегац|глав)|проведут встречу", re.I)),
+           ("cb", "unknown", re.compile(r"(заседани\w+|решени\w+)[^.]{0,40}(Банка России|ЦБ РФ|\bЦБ\b)|по ключевой ставке", re.I)),
+           ("fed", "unknown", re.compile(r"ФРС|FOMC", re.I)),
+           ("opec", "unknown", re.compile(r"ОПЕК", re.I)),
+           ("speech", "unknown", re.compile(r"послани\w+ (президент|Путин|Федеральному)|прямая линия|ПМЭФ|Валдай|ВЭФ", re.I)),
+           ("index", "unknown", re.compile(r"(баз\w+ расч[её]та|пересмотр\w*|ребалансир\w+)[^.]{0,40}индекс", re.I))]
+
+
 TRADE_KINDS = ("dividend", "report", "meeting", "board")     # перед отсечкой ход изучен отдельно (research/moex_dividend_events.py)
 
 
@@ -119,7 +124,7 @@ def extract(text, bases, today=None, base=None):
 
 
 def extract_market(text, today=None):
-    """События всего рынка из текста по правилам: [(дата, вид)]. Дата в будущем (до 45 дней) и рядом с ней слово про переговоры,
+    """События всего рынка из текста по правилам: [(дата, вид, ожидание)]. Дата в будущем (до 45 дней) и рядом с ней слово про переговоры,
     санкции, заседание ЦБ или ФРС, ОПЕК, большое выступление, пересмотр индекса. Только короткие сообщения: в длинных статьях
     и подборках даты относятся к чему угодно."""
     text = (text or "")[:500]
@@ -133,10 +138,10 @@ def extract_market(text, today=None):
         if not dt:
             continue
         ctx = text[max(0, m.start() - 110):m.end() + 110]
-        for kind, rx in M_RULES:
+        for kind, expect, rx in M_RULES:
             if rx.search(ctx):
-                if (dt, kind) not in found:
-                    found.append((dt, kind))
+                if not any(f[0] == dt and f[1] == kind for f in found):
+                    found.append((dt, kind, expect))
                 break
     return found
 
@@ -208,8 +213,8 @@ class CorpCalendar:
             n += self.add(base, dt, kind, item.get("title") or "", item.get("source") or "")
         if not item.get("base") and (item.get("source") or "").startswith("tg:"):
             # события всего рынка: только из телеграм-каналов (короткие сообщения), не из статей
-            for dt, kind in extract_market(text):
-                n += self.add(MARKET, dt, kind, item.get("title") or "", item.get("source") or "")
+            for dt, kind, expect in extract_market(text):
+                n += self.add(MARKET, dt, kind, item.get("title") or "", item.get("source") or "", expect)
         return n
 
     def ingest_model(self, ev, title, source):

@@ -64,14 +64,7 @@ def setup_logging():
 
 
 log = logging.getLogger("main")
-# Слова, по которым новость из общей ленты (ТАСС, РИА) считается возможно рыночной и идёт к модели. Остальное из этих лент
-# отбрасывается без вызова модели. Работает только для источников из llm.rule_filter_sources (по умолчанию список пуст).
-RULE_KEYS = re.compile(
-    r"ставк|\bЦБ\b|Банк\w* России|инфляц|рубл|доллар|юан|евро|нефт|газ|Brent|ОПЕК|санкц|переговор|перемири|Украин|Трамп|Путин|Иран|Китай|"
-    r"бирж|акци|дивиденд|облигац|ОФЗ|бюджет|Минфин|налог|пошлин|экспорт|импорт|ВВП|банк|кредит|ипотек|ФРС|рынк|индекс|IPO|SPO|"
-    r"отч[её]т|прибыл|выручк|сделк|слияни|поглощ|национализ|изъят|суд\w* (взыскал|арестовал|удовлетворил)|авари|взрыв|атак|удар\w* по|"
-    r"Сбер|Газпром|Лукойл|Роснефт|Новатэк|Норникел|Яндекс|ВТБ|Мосбирж|Аэрофлот|Озон|Ozon|Северстал|НЛМК|ММК|Полюс|Алроса|Татнефт|"
-    r"Сургут|Магнит|X5|Русал|МТС|Ростелеком|Самолет|ПИК|Т-Техн|Тинькофф|Совкомбанк|Фосагро|Интер РАО|Русгидро|Транснефт|Система|ВК\b", re.I)
+from .rulekeys import RULE_KEYS  # noqa: E402  (слова для отсева общих лент: bot/rulekeys.py)
 
 
 class _NoMood:
@@ -200,7 +193,7 @@ class Bot:
     def enqueue_news(self, fresh):
         """Сборщик только раскладывает новости по очереди с приоритетом; разбирают их рабочие потоки.
         Раньше сбор и разбор шли в одном потоке по очереди: в час пик новость ждала модель 2–20 минут."""
-        log.info("Новых новостей: %d", len(fresh))
+        log.info("Новых новостей: %d (отсеяно по словам с запуска: %d)", len(fresh), self._rule_dropped)
         import re as _re
         fast = {f"tg:{c}" for c in (self.s.get("sources.telegram_fast") or [])} | {"disclosure"}
         fast_rss = set(self.s.get("sources.rss_fast") or [])
@@ -222,8 +215,11 @@ class Bot:
                 if len(self.seen_titles) > 5000:
                     self.seen_titles = {k: v for k, v in self.seen_titles.items() if now_ts - v < 7200}
             src = it["source"]
-            if src in rule_srcs and not RULE_KEYS.search((it.get("title") or "") + " " + (it.get("summary") or "")[:400]):
-                self._rule_dropped += 1     # общая лента, ни одного рыночного слова: модель не спрашиваем
+            # Отсев по словам до модели (bot/rulekeys.py, 800+ слов). "*" в списке — все источники, кроме раскрытий компаний.
+            # На 16 700 новостях за 4 дня: отсеивается 32%, из 693 событий важности 5+ теряется одно, важности 7+ — ни одного.
+            if (("*" in rule_srcs and src != "disclosure") or src in rule_srcs) and not RULE_KEYS.search(
+                    (it.get("title") or "") + " " + (it.get("summary") or "")[:400]):
+                self._rule_dropped += 1
                 continue
             prio = 0 if src in fast or src in fast_rss else (1 if src.startswith("tg:") else 2)
             self.analyze_q.put((prio, next(self._seq), it))
