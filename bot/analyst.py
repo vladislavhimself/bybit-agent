@@ -284,6 +284,7 @@ class Analyst:
         self.client = anthropic.Anthropic(max_retries=3, timeout=90.0)
         self.model = settings.get("llm.model")
         self.cheap = settings.get("llm.cheap_model")
+        self.mid = settings.get("llm.mid_model") or self.cheap     # общие ленты: Sonnet (Haiku хуже судит о значимости и ожиданиях)
         self.budget = float(settings.get("llm.daily_budget_usd") or 0)
         self.market_notes = settings.get("llm.market_notes") or ""
         self.cost = CostTracker(journal)
@@ -433,15 +434,15 @@ class Analyst:
         if tier == "minimal":
             model = self.cheap                                   # всё дешёвой, но разбор не останавливается
         elif tier == "economy":
-            model = self.model if source in fast else self.cheap  # сильная только для быстрых каналов и раскрытия
+            model = self.model if source in fast else self.mid   # сильная только для быстрых каналов и раскрытия
         else:
             # обычный: сильная для быстрых каналов, раскрытия, лент агентств и прочих RSS; дешёвая для медленных
             # Telegram-каналов и второстепенных источников из cheap_sources
             slow_tg = source.startswith("tg:") and source not in fast
-            model = self.cheap if (slow_tg or source in cheap_src) else self.model
+            model = self.mid if (slow_tg or source in cheap_src) else self.model
         if model == self.model and tier != "minimal" and source != "disclosure" and night_mode(self.s):
-            model = self.cheap      # ночь и выходные: массу разбирает дешёвая, важное ниже перепроверит сильная
-        effort = "low" if model == self.cheap else "medium"
+            model = self.mid        # ночь и выходные: массу разбирает средняя, важное ниже перепроверит сильная
+        effort = "low" if model != self.model else "medium"
         try:
             ev = self._parse(model, system, user, NewsEvent, 8000, effort)
         except anthropic.RateLimitError as e:
@@ -458,7 +459,7 @@ class Analyst:
             return None
         d = self._post(ev)
         night = self.s.get("llm.night") or {}
-        if model == self.cheap and tier != "minimal" and d["relevant"] and (d["importance"] >= int(night.get("recheck_min_importance", 7)) or d["market_wide"]):
+        if model != self.model and tier != "minimal" and d["relevant"] and (d["importance"] >= int(night.get("recheck_min_importance", 7)) or d["market_wide"]):
             # Дешёвая модель назвала новость важной или общерыночной: окончательную оценку даёт сильная. Таких 5–10% потока,
             # поэтому дёшево, а важное не остаётся на дешёвой модели (она хуже оценивает значимость и ожидания)
             try:

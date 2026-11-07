@@ -53,6 +53,41 @@ def similar(a, b):
     return len(a & b) >= 2
 
 
+# Слова-повороты: новость с ними — не пересказ, а новый поворот темы («переговоры сорваны» после «переговоры подтверждены»)
+TURN = {"сорван", "сорвал", "срыв", "отмен", "отказ", "опрове", "провал", "перене", "отлож", "приост", "прерва"}
+
+
+def dup_tokens(title):
+    """Основы значимых слов плюс числа заголовка: одни и те же цифры — сильный признак той же новости."""
+    return stems(title) | {"#" + m.replace(",", ".") for m in re.findall(r"\d+(?:[.,]\d+)?", title or "")}
+
+
+def duplicate_of(recent, title, now, hours=3.0):
+    """Повтор ли заголовок одной из недавно разобранных новостей: три и больше общих значимых слов, не меньше половины слов
+    короткого заголовка, числа (если есть в обоих) совпадают, и в новом заголовке нет слова-поворота, которого не было в первом.
+    recent — [(ts первой публикации, dup_tokens, оценка модели, id новости)], свежие в конце.
+    07.11.2026: из 3 583 новостей за сутки 1 296 (36%) — пересказы того, что пришло за два часа до (ТАСС, РИА, РБК, Прайм)."""
+    st = dup_tokens(title)
+    words = {x for x in st if not x.startswith("#")}
+    if len(words) < 3:
+        return None
+    nums = {x for x in st if x.startswith("#")}
+    for ts, st0, ev, nid in reversed(recent):
+        if now - ts > hours * 3600:
+            continue
+        words0 = {x for x in st0 if not x.startswith("#")}
+        nums0 = {x for x in st0 if x.startswith("#")}
+        common = len(words & words0)
+        if common < 3 or common < 0.5 * min(len(words), len(words0)):
+            continue
+        if nums and nums0 and not (nums <= nums0 or nums0 <= nums):
+            continue            # другие цифры — другая новость (или новые данные); пересказ может опустить часть чисел
+        if any(any(w.startswith(t) for t in TURN) for w in words - words0):
+            continue            # новый поворот темы
+        return ts, st0, ev, nid
+    return None
+
+
 class SentNews:
     """Что уже отправлено владельцу в Telegram: одна и та же новость приходит от десятка каналов (06.11.2026 покупка ЦИАН —
     семь сообщений «ВАЖНАЯ НОВОСТЬ» подряд). Повтор — та же сторона и: общая бумага с тем же видом события, либо три общих

@@ -29,7 +29,7 @@ class J:
     def __init__(self):
         self.kv, self.lessons_added = {}, []
         self.trades = [{"id": 36, "symbol": "RIZ6", "side": "Sell", "tier": "low", "score": -0.566, "news_driven": 0, "opened_ts": 1793980000,
-                        "closed_ts": 1794034827, "entry": 93970.0, "stop_init": 94949.1, "exit": 94630.0, "pnl": -1238.82, "pnl_r": -0.77,
+                        "closed_ts": int(__import__("time").time()) - 7200, "entry": 93970.0, "stop_init": 94949.1, "exit": 94630.0, "pnl": -1238.82, "pnl_r": -0.77,
                         "close_reason": "стоп 94459.5 (программный)", "mfe_r": 0.3, "regime": "down", "reasons": ["крупные сделки за час: продают"]},
                        {"id": 30, "symbol": "GAZPF", "side": "Sell", "tier": "low", "score": -0.6, "news_driven": 0, "opened_ts": 1793700000,
                         "closed_ts": 1793800000, "entry": 110, "stop_init": 112, "exit": 108, "pnl": 500.0, "pnl_r": 1.0, "close_reason": "тейк",

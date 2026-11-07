@@ -41,7 +41,7 @@ from .tg_live import TelegramLive
 from .driver import DriverCheck
 from .factors import Factors
 from .corpcal import KIND_RU, MARKET as CAL_MARKET, CorpCalendar
-from .theme import ClusterWatch, MarketTheme, SentNews
+from .theme import ClusterWatch, MarketTheme, SentNews, dup_tokens, duplicate_of
 from .divcal import DivCalendar
 from .walkforward import WalkForward
 from .signals import build_signal
@@ -159,6 +159,8 @@ class Bot:
         self.kcache = {}  # (symbol, interval) -> (ts, df) для старших таймфреймов
         self._data_err_ts = {}
         self._rule_dropped = 0
+        self._dup_skipped = 0
+        self._cls_recent, self._cls_lock = [], threading.Lock()   # разобранные новости за последние часы: повторы к модели не идут
         if getattr(self.s, "learned", None):
             # значения из файла обучения перекрывают config.yaml: показываем их при запуске, чтобы правка конфига не «терялась» молча
             log.info("Параметры из файла обучения поверх конфига: %s", self.s.learned)
@@ -197,7 +199,7 @@ class Bot:
     def enqueue_news(self, fresh):
         """Сборщик только раскладывает новости по очереди с приоритетом; разбирают их рабочие потоки.
         Раньше сбор и разбор шли в одном потоке по очереди: в час пик новость ждала модель 2–20 минут."""
-        log.info("Новых новостей: %d (отсеяно по словам с запуска: %d)", len(fresh), self._rule_dropped)
+        log.info("Новых новостей: %d (с запуска отсеяно по словам %d, повторов без модели %d)", len(fresh), self._rule_dropped, self._dup_skipped)
         import re as _re
         fast = {f"tg:{c}" for c in (self.s.get("sources.telegram_fast") or [])} | {"disclosure"}
         fast_rss = set(self.s.get("sources.rss_fast") or [])
@@ -305,7 +307,23 @@ class Bot:
                                     f"дивидендная доходность {it['div'] / px * 100:.1f}%. ") + body
                     except Exception:  # noqa: BLE001
                         pass
-                ev = self.analyst.classify(it["title"], body, it["source"], self._lessons())
+                dup = None
+                if it["source"] != "disclosure" and self.s.get("llm.dedup_hours", 3):
+                    with self._cls_lock:
+                        dup = duplicate_of(self._cls_recent, it["title"], it["published_ts"], float(self.s.get("llm.dedup_hours", 3)))
+                if dup:
+                    # Пересказ уже разобранной новости: оценка та же, модель не вызываем. Возраст события — от первой публикации,
+                    # чтобы повтор не выглядел свежей новостью; серии и тема рынка видят повтор как и раньше
+                    ev = dict(dup[2])
+                    ev["duplicate_of"], ev["duplicate_ts"] = dup[3], dup[0]
+                    self._dup_skipped += 1
+                    log.info("повтор (%s), модель не вызываю: %s", dup[3][:20], it["title"][:80])
+                else:
+                    ev = self.analyst.classify(it["title"], body, it["source"], self._lessons())
+                    if ev and ev.get("relevant"):
+                        with self._cls_lock:
+                            self._cls_recent = [x for x in self._cls_recent if it["published_ts"] - x[0] <= 6 * 3600][-400:]
+                            self._cls_recent.append((it["published_ts"], dup_tokens(it["title"]), ev, it["id"]))
             if ev and self.corpcal:
                 try:
                     self.corpcal.ingest_model(ev, it["title"], it["source"])
@@ -316,15 +334,17 @@ class Bot:
             if ev["already_priced"] and self.s.get("signals.drop_already_priced", True):
                 return   # на Мосбирже выключено: по архиву «уже в цене» события шли в сторону прогноза не хуже остальных
             self._note_unknown_tickers(ev)
-            self.j.add_event(it["id"], it["published_ts"], ev, it["title"])
+            ev_ts = ev.get("duplicate_ts") or it["published_ts"]
+            self.j.add_event(it["id"], ev_ts, ev, it["title"])
             lag = time.time() - it["published_ts"]
             log.info("Событие [%s, imp %d, %s, %s] задержка %.0fс: %s", ev["event_type"], ev["importance"],
                      ev["direction"], ev["affected_symbols"] or "рынок", lag, it["title"][:90])
-            rec = {"news_id": it["id"], "ts": it["published_ts"], "event_type": ev["event_type"],
+            rec = {"news_id": it["id"], "ts": ev_ts, "event_type": ev["event_type"],
                    "importance": ev["importance"], "direction": ev["direction"], "confidence": ev["confidence"],
                    "affected": ev["affected_symbols"], "market_wide": ev["market_wide"],
                    "horizon_hours": ev["horizon_hours"], "reasoning": ev["reasoning"], "title": it["title"]}
-            self.events_q.put(rec)
+            if not ev.get("duplicate_of"):
+                self.events_q.put(rec)     # повтор реакций бота не запускает, но в серии (ниже) считается
             if self.clusters:
                 try:
                     syn = self.clusters.add(rec)
@@ -341,6 +361,8 @@ class Bot:
                                                        fmt.block("Оценка", f"Считаю одним событием важности 8 ({d}): стопы встречных позиций подтягиваю, тему рынка пересчитываю")]), html=True)
                 except Exception as e:  # noqa: BLE001
                     log.warning("серии новостей: %s", e)
+            if ev.get("duplicate_of"):
+                return
             if ev["importance"] >= 8 and self.sent_news.repeat(ev["affected_symbols"], ev["event_type"], ev["direction"], it["title"]):
                 log.info("важная новость уже была в Telegram, повтор не шлю: %s", it["title"][:90])
             elif ev["importance"] >= 8:

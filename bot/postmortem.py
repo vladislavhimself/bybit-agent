@@ -62,10 +62,11 @@ class PostMortem:
         """Разобрать убыточные сделки, ещё не разобранные (force — за 7 дней заново). Возвращает число разборов."""
         done = set(self.j.kv_get("postmortem_done", []) or [])
         since = time.time() - 7 * 86400
+        # только сделки за 7 дней, новые первыми (07.11 первый запуск разобрал пять сделок октября вместо вчерашних)
         trades = [t for t in self.j.closed_trades(40) if t.get("pnl") is not None and t["pnl"] < 0
-                  and (force and (t["closed_ts"] or 0) >= since or t["id"] not in done)]
+                  and (t["closed_ts"] or 0) >= since and (force or t["id"] not in done)]
         n = 0
-        for t in sorted(trades, key=lambda x: x["closed_ts"] or 0)[:int(self.cfg().get("max_per_run", 5))]:
+        for t in sorted(trades, key=lambda x: -(x["closed_ts"] or 0))[:int(self.cfg().get("max_per_run", 5))]:
             v = self.analyze(t)
             done.add(t["id"])
             self.j.kv_set("postmortem_done", sorted(done)[-300:])
