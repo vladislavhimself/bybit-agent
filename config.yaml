@@ -174,7 +174,9 @@ markets:
     corpcal: {enabled: true, pre_event_shadow: true, pre_event_min_days: 3, pre_event_max_days: 20, pre_days: 3, side_cap: 2,
               unknown_before_min: 30, unknown_after_min: 15}
     # 07.11: главная тема рынка (модель раз в час и сразу после серии новостей); технические сделки против темы не открываются
-    theme: {enabled: true, every_min: 60, min_confidence: 0.6, max_age_min: 180}
+    theme: {enabled: true, every_min: 60, every_min_night: 180, min_confidence: 0.6, max_age_min: 180}   # ночью и в выходные раз в 3 часа
+    # разбор каждой убыточной сделки утром сильной моделью; урок принимается командой /approve
+    postmortem: {enabled: true, hour_msk: 7, max_per_run: 5}
     notify: {news_repeat_hours: 12}     # одна и та же новость (от разных каналов) в Telegram один раз за столько часов; 0 — выключить
     # серия: 5+ общерыночных новостей об одном за 30 минут = одно событие важности 8
     clusters: {enabled: true, window_min: 30, min_items: 5, quiet_min: 120}
@@ -351,6 +353,9 @@ markets:
     llm:
       daily_budget_usd: 6.0             # прежний мягкий порог (оставлен для совместимости)
       pacing: true                      # лимит растянут на торговый день, чтобы сильная модель работала и вечером
+      # ночь и выходные: массу новостей разбирает дешёвая модель, всё с важностью 7+ или «на весь рынок» перепроверяет сильная;
+      # раскрытия компаний всегда сильной. 07.11: ночные заявления Трампа съели 2.5 $ из 6 к 10:40 МСК
+      night: {enabled: true, from: "00:00", to: "07:00", weekends: true, recheck_min_importance: 7}
       rule_filter_sources: ["*"]        # 07.11: новости без единого рыночного слова (bot/rulekeys.py) к модели не идут; "*" — все источники,
                                         # кроме раскрытий компаний. Выключить: []
       budget_soft_usd: 4.5              # до 4.5$ обычный режим; 4.5–6$ экономный (сильная модель только быстрые каналы и раскрытие)

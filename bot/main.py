@@ -29,6 +29,7 @@ from .news import NewsCollector
 from .notify import Telegram
 from .playbook import Playbook
 from .review import Reviewer
+from .postmortem import PostMortem
 from .risk import RiskManager
 from .analytics import Analytics
 from .crowd import Crowd
@@ -112,6 +113,8 @@ class Bot:
         self.clusters = ClusterWatch(self.s, self._index_move) if (self.s.get("clusters") or {}).get("enabled") else None
         self._theme_now = False
         self.sent_news = SentNews(self.s, self.j)     # что уже писали в Telegram: повторы одной новости не шлём
+        # разбор каждой убыточной сделки утром (bot/postmortem.py)
+        self.postmortem = PostMortem(self.s, self.j, self.analyst, self.tg, self.corpcal, self.theme) if self.analyst and self.market == "moex" else None
         self.exe.driver = (DriverCheck(self.s, self.analyst, self.j, self.ex)
                            if self.analyst and (self.s.get("risk.driver_check") or {}).get("mode") else None)
         self.reviewer = Reviewer(self.s, self.j, self.tg) if self.s.has_anthropic else None
@@ -870,7 +873,15 @@ class Bot:
                 self.tg.send(fmt.block("▶️ Возобновлено", "Торговля возобновлена, отсчёт просадки начат заново"), html=True)
             elif c == "/approve":
                 msgs = self.reviewer.apply_pending() if self.reviewer else []
+                if self.postmortem:
+                    msgs += self.postmortem.apply_pending()
                 self.tg.send(fmt.block("Применено", *[fmt.esc(m) for m in msgs]) if msgs else fmt.block("Правки", "нет ожидающих"), html=True)
+            elif c == "/postmortem":
+                if self.postmortem:
+                    self.tg.send("⏳ Разбираю убыточные сделки за 7 дней, 1–2 минуты")
+                    threading.Thread(target=lambda: self.postmortem.run(force=True), daemon=True, name="postmortem").start()
+                else:
+                    self.tg.send("разбор убытков недоступен (нет аналитика)")
             elif c == "/lessons":
                 self.tg.send(fmt.block("📚 Уроки", fmt.esc(self.reviewer.lessons_text(20)) if self.reviewer else "аналитик выключен"), html=True)
             elif c == "/review":
@@ -953,7 +964,7 @@ class Bot:
                 except Exception as e:  # noqa: BLE001
                     self.tg.send(f"Обновление не удалось: {e}")
             elif c == "/help":
-                self.tg.send("/status /why /shadow /analytics /market /stop /panic /resume /review /approve /lessons /calendar /log /update")
+                self.tg.send("/status /why /shadow /analytics /market /stop /panic /resume /review /postmortem /approve /lessons /calendar /log /update")
 
     def _auto_apply(self):
         return bool(self.s.get("learning.auto_apply")) and self.s.mode != "live"
@@ -1235,6 +1246,10 @@ class Bot:
                     if due and now - self.last.get("walkforward", 0) >= 20 * 3600:
                         self.last["walkforward"] = now
                         threading.Thread(target=self.wf.run, kwargs={"apply": True, "notify": True}, daemon=True, name="wf").start()
+                if self.postmortem and now - self.last.get("postmortem", 0) >= 900:
+                    self.last["postmortem"] = now
+                    if self.postmortem.due():
+                        threading.Thread(target=self.postmortem.tick, daemon=True, name="postmortem").start()
                 if self.s.market == "moex" and now - self.last.get("cbr_reminder", 0) >= 3600:
                     self.last["cbr_reminder"] = now
                     self._cbr_consensus_reminder()

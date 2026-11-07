@@ -5,13 +5,30 @@ import threading
 import time
 from datetime import datetime, timezone
 from typing import List, Literal
+from zoneinfo import ZoneInfo
 
 import anthropic
 
 from .config import DATA
 from pydantic import BaseModel
 
+MSK = ZoneInfo("Europe/Moscow")
 log = logging.getLogger("analyst")
+
+
+def night_mode(settings, now=None):
+    """Ночь (llm.night.from–to по Москве) и выходные: торгов нет, а ночные заявления Трампа по быстрым каналам съедали
+    треть дневного лимита сильной модели (07.11.2026: 2.5 $ к 10:40 МСК). В это время массу новостей разбирает дешёвая
+    модель, а всё, что она назвала важным, перепроверяет сильная (см. classify)."""
+    c = settings.get("llm.night") or {}
+    if not c.get("enabled"):
+        return False
+    now = now or datetime.now(MSK)
+    if c.get("weekends", True) and now.weekday() >= 5:
+        return True
+    hm = now.strftime("%H:%M")
+    a, b = str(c.get("from", "00:00")), str(c.get("to", "07:00"))
+    return a <= hm < b if a <= b else (hm >= a or hm < b)
 
 
 def normalize_tickers(symbols, alias=None, limit=10):
@@ -373,6 +390,8 @@ class Analyst:
             # Telegram-каналов и второстепенных источников из cheap_sources
             slow_tg = source.startswith("tg:") and source not in fast
             model = self.cheap if (slow_tg or source in cheap_src) else self.model
+        if model == self.model and tier != "minimal" and source != "disclosure" and night_mode(self.s):
+            model = self.cheap      # ночь и выходные: массу разбирает дешёвая, важное ниже перепроверит сильная
         effort = "low" if model == self.cheap else "medium"
         try:
             ev = self._parse(model, system, user, NewsEvent, 8000, effort)
@@ -388,6 +407,23 @@ class Analyst:
             return None
         if ev is None:
             return None
+        d = self._post(ev)
+        night = self.s.get("llm.night") or {}
+        if model == self.cheap and tier != "minimal" and d["relevant"] and (d["importance"] >= int(night.get("recheck_min_importance", 7)) or d["market_wide"]):
+            # Дешёвая модель назвала новость важной или общерыночной: окончательную оценку даёт сильная. Таких 5–10% потока,
+            # поэтому дёшево, а важное не остаётся на дешёвой модели (она хуже оценивает значимость и ожидания)
+            try:
+                ev2 = self._parse(self.model, system, user, NewsEvent, 8000, "medium")
+            except anthropic.APIError as e:
+                log.warning("перепроверка сильной моделью: %s", str(e)[:120])
+                ev2 = None
+            if ev2 is not None:
+                d = self._post(ev2)
+                d["rechecked"] = True
+        return d
+
+    def _post(self, ev):
+        """Ответ модели -> словарь события с правилами поверх: границы, тикеры биржи, расхождение с ожиданиями, психология."""
         d = ev.model_dump()
         d["importance"] = max(0, min(10, int(d["importance"])))
         d["confidence"] = max(0.0, min(1.0, float(d["confidence"])))

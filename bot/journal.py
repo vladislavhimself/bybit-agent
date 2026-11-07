@@ -115,6 +115,13 @@ class Journal:
             r["affected"] = json.loads(r["affected"] or "[]")
         return rows
 
+    def events_between(self, a, b, limit=80):
+        """События (разобранные новости) за отрезок времени, важные сначала — для разбора сделки."""
+        rows = self._run("SELECT * FROM events WHERE ts BETWEEN ? AND ? ORDER BY importance DESC, ts DESC LIMIT ?", (int(a), int(b), limit), "all")
+        for r in rows:
+            r["affected"] = json.loads(r["affected"] or "[]")
+        return rows
+
     # ---- trades ----
     def open_trade(self, t: dict) -> int:
         return self._run(

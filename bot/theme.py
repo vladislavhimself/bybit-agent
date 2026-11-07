@@ -141,7 +141,12 @@ class MarketTheme:
         return self.s.get("theme") or {}
 
     def due(self, now=None):
-        return self.cfg().get("enabled") and (now or time.time()) - self.last_ts >= float(self.cfg().get("every_min", 60)) * 60
+        c = self.cfg()
+        if not c.get("enabled"):
+            return False
+        from .analyst import night_mode
+        every = c.get("every_min_night", 180) if night_mode(self.s) else c.get("every_min", 60)
+        return (now or time.time()) - self.last_ts >= float(every) * 60
 
     def refresh(self, now=None):
         """Один вызов модели: тема, сторона, уверенность. При ошибке прежняя тема остаётся до истечения срока."""
@@ -164,7 +169,9 @@ class MarketTheme:
                     mv = ""
             user = (f"{mv}\n\nКалендарь на неделю:\n{cal or 'нет'}\n\nНовости за 12 часов (сначала свежие):\n" + "\n".join(lines))
             tier = self.analyst.spend_tier() if hasattr(self.analyst, "spend_tier") else "normal"
-            model = self.analyst.model if tier == "normal" else self.analyst.cheap
+            # Один вызов в час: тему считает сильная модель и в экономном режиме. 06.11 вечером дешёвая дала «сторона не ясна, 0.55»,
+            # сильная ночью — «ожидание переговоров, рост, 0.70–0.75»; из-за этого тема вечером не работала
+            model = self.analyst.cheap if tier == "minimal" else self.analyst.model
             res = self.analyst._parse(model, SYSTEM, user, ThemeView, 2500, "low")
             if res is None:
                 return
