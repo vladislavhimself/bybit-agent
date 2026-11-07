@@ -79,9 +79,10 @@ assert a.calls[0][0] == "opus" and a.calls[0][1] == "high" and "RIZ6" in a.calls
 assert "РАЗБОР УБЫТКА" in tg.sent[0] and "/approve" in tg.sent[0] and "238.82" in tg.sent[0], tg.sent[0]
 assert j.kv["postmortem_done"] == [36] and len(j.kv["pending_lessons"]) == 1
 assert pm.run() == 0, "второй раз та же сделка не разбирается"
-assert pm.run(force=True) == 0, "force — за 7 дней от текущего времени; сделка из прошлого в него не попадает"
+j.trades[0]["closed_ts"] = int(__import__("time").time()) - 3600
+assert pm.run(force=True) == 1, "force — убыточные сделки за 7 дней разбираются заново"
 msgs = pm.apply_pending()
-assert len(msgs) == 1 and j.lessons_added[0][1] == "postmortem" and j.kv["pending_lessons"] == []
+assert len(msgs) == 2 and j.lessons_added[0][1] == "postmortem" and j.kv["pending_lessons"] == []
 print(tg.sent[0])
 
 
