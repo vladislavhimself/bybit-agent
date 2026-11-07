@@ -1,6 +1,7 @@
 """Аналитик на Claude: классификация новостей, второе мнение по сетапам, учёт расходов и дневной бюджет."""
 import json
 import logging
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -14,6 +15,51 @@ from pydantic import BaseModel
 
 MSK = ZoneInfo("Europe/Moscow")
 log = logging.getLogger("analyst")
+
+
+# Полы важности (Мосбиржа). 06.11.2026 модель оценила «Путин подтвердил дату переговоров» на 6 и «нейтрально»: событие ожидаемое,
+# дата — уточнение. По её шкале это логично, но рынок за день вырос на 0.8% именно на этом, и бот не отреагировал.
+# Темы, которые двигают весь рынок, получают важность не ниже пола и флаг «на весь рынок»; сторону и уверенность решает модель.
+# Шаблон (регистр не важен) -> (пол важности, на весь рынок). Контекстные слова обязательны: «переговоры о зарплате» сюда не попадают.
+RU_GEO = r"(Украин|Росси|РФ|США|Трамп|Путин|Зеленск|Уиткофф|Кремл|Белы\w+ дом|Абу-Даби|Стамбул|Эр-Рияд|Женев)"
+IMPORTANCE_FLOORS = [
+    (re.compile(r"(мирн\w+ (переговор|план|соглашен|урегулирован|сделк)|перемири|прекращени\w+ огня|срыв\w* переговор|переговор\w*[^.]{0,80}"
+                + RU_GEO + "|" + RU_GEO + r"[^.]{0,80}переговор)", re.I), 8, True),
+    (re.compile(r"(пакет\w* санкц|санкци\w*[^.]{0,40}(введ|вступ|принят|утверд|снят|ослаб|отмен)|(введ|вступ|принят|утверд|снят|ослаб|отмен)\w*[^.]{0,40}санкци)", re.I), 7, True),
+    (re.compile(r"(ключев\w+ ставк|ставк\w+ ЦБ|Банк\w* России|Центробанк)[^.]{0,80}(сохран|повыс|сниз|оставил|решил|поднял|опустил)", re.I), 9, True),
+    (re.compile(r"(сохран|повыс|сниз|оставил|поднял|опустил)\w*[^.]{0,40}ключев\w+ ставк", re.I), 9, True),
+    (re.compile(r"мобилизац", re.I), 9, True),
+    (re.compile(r"(ФРС|FOMC)[^.]{0,60}(повыс|сниз|сохран|ставк)", re.I), 7, True),
+    (re.compile(r"(ОПЕК|OPEC)[^.]{0,60}(добыч|квот|решил|договор)", re.I), 7, True),
+    (re.compile(r"(Brent|нефть|нефти)[^.]{0,40}(обвал|рухнул|взлет|подскоч|\+?\d{1,2}[.,]?\d?\s?%)", re.I), 6, True),
+    (re.compile(r"(удар\w*|атак\w*)[^.]{0,40}(НПЗ|нефтебаз|Москв|инфраструктур|порт)", re.I), 6, True),
+]
+
+
+def apply_floors(d, text, enabled=True):
+    """Поднять важность до пола по теме новости. Возвращает описание сработавшего пола или пусто."""
+    if not enabled or not d:
+        return ""
+    for rx, floor, mw in IMPORTANCE_FLOORS:
+        m = rx.search(text or "")
+        if not m:
+            continue
+        changed = []
+        if int(d.get("importance") or 0) < floor:
+            changed.append(f"важность {d.get('importance')} -> {floor}")
+            d["importance"] = floor
+        if mw and not d.get("market_wide"):
+            changed.append("на весь рынок")
+            d["market_wide"] = True
+        if not d.get("relevant"):
+            changed.append("значимо")
+            d["relevant"] = True
+        if changed:
+            note = f"пол по правилу «{m.group(0)[:40]}»: " + ", ".join(changed)
+            d["reasoning"] = (note + ". " + (d.get("reasoning") or ""))[:600]
+            return note
+        return ""
+    return ""
 
 
 def night_mode(settings, now=None):
@@ -420,6 +466,10 @@ class Analyst:
             if ev2 is not None:
                 d = self._post(ev2)
                 d["rechecked"] = True
+        if self.s.get("market") == "moex":
+            note = apply_floors(d, f"{title} {(summary or '')[:400]}", bool(self.s.get("llm.importance_floors", True)))
+            if note:
+                log.info("%s: %s", title[:70], note)
         return d
 
     def _post(self, ev):
