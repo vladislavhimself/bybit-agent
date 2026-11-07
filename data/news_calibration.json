@@ -1,0 +1,272 @@
+{
+ "baseline": {
+  "index": {
+   "n": 9425,
+   "mean_r4": -0.01,
+   "mean_abs_r4": 0.523,
+   "share_gt_05": 0.36,
+   "share_gt_1": 0.14,
+   "dir_hit": 0.51,
+   "n_dir": 5371,
+   "mean_abs_r24": 1.393
+  },
+  "stocks": {
+   "n": 32139,
+   "mean_r4": 0.005,
+   "mean_abs_r4": 0.697,
+   "share_gt_05": 0.44,
+   "share_gt_1": 0.22,
+   "dir_hit": 0.5,
+   "n_dir": 22215,
+   "mean_abs_r24": 1.75
+  }
+ },
+ "topics": {
+  "мирные переговоры / перемирие": {
+   "n": 55,
+   "mean_r4": 0.054,
+   "mean_abs_r4": 0.558,
+   "share_gt_05": 0.35,
+   "share_gt_1": 0.15,
+   "dir_hit": 0.38,
+   "n_dir": 26,
+   "mean_abs_r24": 1.272,
+   "model_importance_avg": 4.8
+  },
+  "переговоры (любые)": {
+   "n": 60,
+   "mean_r4": 0.108,
+   "mean_abs_r4": 0.635,
+   "share_gt_05": 0.4,
+   "share_gt_1": 0.22,
+   "dir_hit": 0.38,
+   "n_dir": 24,
+   "mean_abs_r24": 0.967,
+   "model_importance_avg": 4.7
+  },
+  "санкции (слово)": {
+   "n": 43,
+   "mean_r4": -0.119,
+   "mean_abs_r4": 0.589,
+   "share_gt_05": 0.37,
+   "share_gt_1": 0.16,
+   "dir_hit": 0.5,
+   "n_dir": 38,
+   "mean_abs_r24": 1.532,
+   "model_importance_avg": 5.2
+  },
+  "ключевая ставка ЦБ": {
+   "n": 29,
+   "mean_r4": -0.058,
+   "mean_abs_r4": 0.891,
+   "share_gt_05": 0.55,
+   "share_gt_1": 0.28,
+   "dir_hit": 0.64,
+   "n_dir": 14,
+   "mean_abs_r24": 2.338,
+   "model_importance_avg": 5.1
+  },
+  "инфляция": {
+   "n": 86,
+   "mean_r4": -0.002,
+   "mean_abs_r4": 0.386,
+   "share_gt_05": 0.24,
+   "share_gt_1": 0.08,
+   "dir_hit": 0.55,
+   "n_dir": 47,
+   "mean_abs_r24": 1.586,
+   "model_importance_avg": 4.2
+  },
+  "нефть / Brent": {
+   "n": 28,
+   "mean_r4": 0.077,
+   "mean_abs_r4": 0.421,
+   "share_gt_05": 0.32,
+   "share_gt_1": 0.11,
+   "dir_hit": 0.59,
+   "n_dir": 22,
+   "mean_abs_r24": 1.163,
+   "model_importance_avg": 5.6
+  },
+  "Трамп": {
+   "n": 213,
+   "mean_r4": 0.008,
+   "mean_abs_r4": 0.497,
+   "share_gt_05": 0.33,
+   "share_gt_1": 0.14,
+   "dir_hit": 0.49,
+   "n_dir": 107,
+   "mean_abs_r24": 1.397,
+   "model_importance_avg": 4.6
+  },
+  "Путин": {
+   "n": 55,
+   "mean_r4": -0.113,
+   "mean_abs_r4": 0.581,
+   "share_gt_05": 0.36,
+   "share_gt_1": 0.2,
+   "dir_hit": 0.5,
+   "n_dir": 20,
+   "mean_abs_r24": 1.354,
+   "model_importance_avg": 4.6
+  },
+  "удары / атаки": {
+   "n": 149,
+   "mean_r4": 0.03,
+   "mean_abs_r4": 0.391,
+   "share_gt_05": 0.28,
+   "share_gt_1": 0.07,
+   "dir_hit": 0.44,
+   "n_dir": 129,
+   "mean_abs_r24": 1.215,
+   "model_importance_avg": 6.0
+  },
+  "бюджет / Минфин": {
+   "n": 24,
+   "mean_r4": 0.061,
+   "mean_abs_r4": 0.61,
+   "share_gt_05": 0.38,
+   "share_gt_1": 0.17,
+   "dir_hit": 0.38,
+   "n_dir": 8,
+   "mean_abs_r24": 1.207,
+   "model_importance_avg": 3.5
+  },
+  "Китай": {
+   "n": 25,
+   "mean_r4": -0.116,
+   "mean_abs_r4": 0.802,
+   "share_gt_05": 0.4,
+   "share_gt_1": 0.32,
+   "dir_hit": 0.39,
+   "n_dir": 18,
+   "mean_abs_r24": 1.502,
+   "model_importance_avg": 4.1
+  },
+  "Иран / Израиль / Ближний Восток": {
+   "n": 283,
+   "mean_r4": 0.015,
+   "mean_abs_r4": 0.397,
+   "share_gt_05": 0.25,
+   "share_gt_1": 0.08,
+   "dir_hit": 0.49,
+   "n_dir": 213,
+   "mean_abs_r24": 1.084,
+   "model_importance_avg": 5.6
+  }
+ },
+ "by_importance": {
+  "2": {
+   "n": 770,
+   "mean_r4": -0.006,
+   "mean_abs_r4": 0.522,
+   "share_gt_05": 0.39,
+   "share_gt_1": 0.14,
+   "dir_hit": 0.49,
+   "n_dir": 132,
+   "mean_abs_r24": 1.434
+  },
+  "3": {
+   "n": 2804,
+   "mean_r4": -0.023,
+   "mean_abs_r4": 0.52,
+   "share_gt_05": 0.36,
+   "share_gt_1": 0.15,
+   "dir_hit": 0.51,
+   "n_dir": 1054,
+   "mean_abs_r24": 1.401
+  },
+  "4": {
+   "n": 2459,
+   "mean_r4": 0.008,
+   "mean_abs_r4": 0.51,
+   "share_gt_05": 0.35,
+   "share_gt_1": 0.13,
+   "dir_hit": 0.52,
+   "n_dir": 1387,
+   "mean_abs_r24": 1.355
+  },
+  "5": {
+   "n": 1585,
+   "mean_r4": 0.012,
+   "mean_abs_r4": 0.54,
+   "share_gt_05": 0.37,
+   "share_gt_1": 0.15,
+   "dir_hit": 0.5,
+   "n_dir": 1071,
+   "mean_abs_r24": 1.413
+  },
+  "6": {
+   "n": 440,
+   "mean_r4": -0.043,
+   "mean_abs_r4": 0.591,
+   "share_gt_05": 0.39,
+   "share_gt_1": 0.17,
+   "dir_hit": 0.51,
+   "n_dir": 363,
+   "mean_abs_r24": 1.521
+  },
+  "7": {
+   "n": 1312,
+   "mean_r4": -0.03,
+   "mean_abs_r4": 0.508,
+   "share_gt_05": 0.34,
+   "share_gt_1": 0.12,
+   "dir_hit": 0.5,
+   "n_dir": 1312,
+   "mean_abs_r24": 1.359
+  },
+  "8": {
+   "n": 52,
+   "mean_r4": -0.124,
+   "mean_abs_r4": 0.538,
+   "share_gt_05": 0.38,
+   "share_gt_1": 0.15,
+   "dir_hit": 0.54,
+   "n_dir": 52,
+   "mean_abs_r24": 1.291
+  }
+ },
+ "by_type": {
+  "regulation": {
+   "n": 14947,
+   "mean_r4": -0.001,
+   "mean_abs_r4": 0.673,
+   "share_gt_05": 0.43,
+   "share_gt_1": 0.21,
+   "dir_hit": 0.51,
+   "n_dir": 10706,
+   "mean_abs_r24": 1.662
+  },
+  "macro": {
+   "n": 14228,
+   "mean_r4": 0.003,
+   "mean_abs_r4": 0.717,
+   "share_gt_05": 0.46,
+   "share_gt_1": 0.22,
+   "dir_hit": 0.5,
+   "n_dir": 9606,
+   "mean_abs_r24": 1.831
+  },
+  "other": {
+   "n": 2852,
+   "mean_r4": 0.044,
+   "mean_abs_r4": 0.72,
+   "share_gt_05": 0.44,
+   "share_gt_1": 0.22,
+   "dir_hit": 0.47,
+   "n_dir": 1859,
+   "mean_abs_r24": 1.795
+  },
+  "earnings": {
+   "n": 51,
+   "mean_r4": 0.013,
+   "mean_abs_r4": 0.795,
+   "share_gt_05": 0.45,
+   "share_gt_1": 0.27,
+   "dir_hit": 0.67,
+   "n_dir": 9,
+   "mean_abs_r24": 1.581
+  }
+ }
+}

@@ -31,9 +31,9 @@ IMPORTANCE_FLOORS = [
     (re.compile(r"мобилизац", re.I), 9, True),
     (re.compile(r"(ФРС|FOMC)[^.]{0,60}(повыс|сниз|сохран|ставк)", re.I), 7, True),
     (re.compile(r"(ОПЕК|OPEC)[^.]{0,60}(добыч|квот|решил|договор)", re.I), 7, True),
-    (re.compile(r"(Brent|нефть|нефти)[^.]{0,40}(обвал|рухнул|взлет|подскоч|\+?\d{1,2}[.,]?\d?\s?%)", re.I), 6, True),
-    (re.compile(r"(удар\w*|атак\w*)[^.]{0,40}(НПЗ|нефтебаз|Москв|инфраструктур|порт)", re.I), 6, True),
 ]
+# Не в списке по данным архива (research/news_calibration.py, 9 425 реакций индекса): удары и атаки — средний ход индекса 0.39%
+# при фоне 0.52%, нефть 0.42%, Иран и Ближний Восток 0.40%. Ставка ЦБ 0.89%, Китай 0.80%, переговоры 0.56–0.64%, санкции 0.59%.
 
 
 def apply_floors(d, text, enabled=True):
@@ -350,6 +350,9 @@ class Analyst:
         pb = DATA / "moex_playbook.txt"
         if self.s.market == "moex" and pb.exists():
             parts.append(pb.read_text(encoding="utf-8")[:2500])
+        cal = DATA / "news_calibration.txt"    # research/news_calibration.py: что по факту двигало индекс
+        if self.s.market == "moex" and cal.exists():
+            parts.append(cal.read_text(encoding="utf-8")[:1500])
         if getattr(self, "corpcal", None):
             cc = self.corpcal.context_text()
             if cc:
