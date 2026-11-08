@@ -100,6 +100,29 @@ class EventPlay:
             cons, src = self.consensus()
             src_line = fmt.block("Источник", fmt.esc(it.get("title", "")[:200]))
             log.info("Решение ЦБ: %.2f%% (консенсус %s) — %s", actual, cons, it.get("title", "")[:80])
+            et = getattr(self.b, "eventtrades", None)
+            if et is not None:
+                # 08.11.2026: сторону по словам решения и по консенсусу не берём (история: −18% / 50%). Журналируем расхождение,
+                # взводим правило A: через 4 часа решают облигации (RGBI), а не формулировка (bot/eventtrades.py)
+                sid = None
+                er = getattr(self.b, "expect_rules", None)
+                if er is not None:
+                    cons2, src2, strong = er.cbr_consensus(now)
+                    if cons2 is not None:
+                        cons, src = cons2, src2
+                    sid = er.record("cbr", "CBR", cons, actual, (actual - cons) if cons is not None else None,
+                                    n_sources=2 if strong else 1, news_id=it.get("id"), title=it.get("title", ""),
+                                    note="сторона решается по RGBI через 4 часа")
+                et.arm_cbr(day, it.get("published_ts") or now, actual, cons, sid)
+                cons_txt = (f"{cons:g}% ({src}); факт {'ЖЁСТЧЕ' if actual > cons else 'МЯГЧЕ' if actual < cons else 'как ждали'}"
+                            + (f" на {abs(actual - cons):g} п.п." if actual != cons else "")) if cons is not None else "неизвестен"
+                self.b.tg.send("\n\n".join([
+                    f"🏦 <b>РЕШЕНИЕ ЦБ: {actual:g}%</b>",
+                    fmt.block("Консенсус", fmt.esc(cons_txt)),
+                    fmt.block("Что делаю", f"Сторону по словам не беру. Через {et.cfg('cbr_wait_hours', 4)} ч смотрю индекс облигаций RGBI: "
+                              f"упал на {et.cfg('cbr_rgbi_min_pct', 0.15)}%+ — шорт индекса, вырос — лонг, иначе сделки нет"),
+                    src_line]), html=True)
+                return True
             if cons is None:
                 self.b.tg.send("\n\n".join([f"🏦 <b>РЕШЕНИЕ ЦБ: {actual:g}%</b>", fmt.block("Сделка", "нет: консенсус не известен"), src_line]), html=True)
                 return True

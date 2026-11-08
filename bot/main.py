@@ -35,7 +35,10 @@ from .analytics import Analytics
 from .crowd import Crowd
 from .disclosure import Disclosure
 from .eventplay import EventPlay
+from .eventtrades import EventTrades
+from .expect_rules import ExpectRules
 from .expectations import ExpectationsMemory
+from .pricesignals import PriceSignals
 from .shadow import ShadowBook
 from .tg_live import TelegramLive
 from .driver import DriverCheck
@@ -127,6 +130,8 @@ class Bot:
         self.paper_mode = bool(self.j.kv_get("paper_mode", False))
         self.last_known, self.last_known_ts, self.broker_down_since = (0.0, [], {"wallet": 0.0}), time.time(), None   # до первого ответа биржи
         self.expect = self.crowd = self.eventplay = None
+        self.expect_rules = self.eventtrades = self.pricesignals = None
+        self._shock_until = 0.0   # первый час после серии новостей (шок): новых входов нет (08.11: сильный первый час на шоке за неделю разворачивается)
         if self.market == "moex":
             self.eventplay = EventPlay(self)
             self.news.disclosure = Disclosure(self.s, self.ex)
@@ -134,6 +139,14 @@ class Bot:
                 self.expect = ExpectationsMemory(self.s, self.j, self.analyst, self.cal)
                 self.crowd = Crowd(self.s, self.analyst, self.j)
                 self.analyst.expectations, self.analyst.crowd = self.expect, self.crowd
+            # 08.11.2026: ожидания и расхождения по правилам (без модели), сделки A/B на расхождении, подтверждённом рынком,
+            # ценовые сигналы по дневным свечам в тенях
+            self.expect_rules = ExpectRules(self.s, self.j)
+            if (self.s.get("events") or {}).get("enabled", True):
+                self.eventtrades = EventTrades(self)
+                self.exe.event_manager = self.eventtrades
+            if (self.s.get("pricesignals") or {}).get("enabled", True):
+                self.pricesignals = PriceSignals(self.s, self.ex, self.shadow, self.j)
         self.events_q = queue.Queue()
         self.analyze_q = queue.PriorityQueue()   # новости на разбор моделью: (приоритет, номер, новость)
         self._seq = itertools.count()
@@ -211,6 +224,11 @@ class Bot:
                     self.corpcal.ingest(it)
                 except Exception as e:  # noqa: BLE001
                     log.debug("календарь событий: %s", e)
+            if self.expect_rules:
+                try:   # ожидания (консенсус по ставке, прогнозы дивидендов, недельная инфляция) — по правилам, из каждой новости, без модели
+                    self.expect_rules.ingest(it)
+                except Exception as e:  # noqa: BLE001
+                    log.debug("ожидания: %s", e)
             # один и тот же заголовок из десяти каналов (особенно в день ЦБ): анализируем один раз за 2 часа
             key = _re.sub(r"[^a-zа-яё0-9%]+", " ", (it.get("title") or "").lower()).strip()[:70]
             now_ts = time.time()
@@ -345,6 +363,13 @@ class Bot:
                    "horizon_hours": ev["horizon_hours"], "reasoning": ev["reasoning"], "title": it["title"]}
             if not ev.get("duplicate_of"):
                 self.events_q.put(rec)     # повтор реакций бота не запускает, но в серии (ниже) считается
+                if self.expect_rules:
+                    try:   # расхождение с ожиданием (отчёт «хуже/лучше ожиданий», дивиденд против прогнозов) — в журнал и кандидату в сделку B
+                        info = self.expect_rules.on_event(ev, it["title"], it["id"], ev_ts, it["source"])
+                        if info and self.eventtrades:
+                            self.eventtrades.on_surprise(info, it["title"], ev_ts, it["id"])
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("расхождение с ожиданием: %s", e)
             if self.clusters:
                 try:
                     syn = self.clusters.add(rec)
@@ -354,6 +379,7 @@ class Bot:
                                          "reasoning": syn["reasoning"]}, syn["title"])
                         self.events_q.put(syn)
                         self._theme_now = True     # главный цикл пересчитает тему рынка сразу
+                        self._shock_until = time.time() + float(self.s.get("shock_block_min", 60) or 0) * 60   # за первым часом шока не бежим
                         d = {"bullish": "позитив", "bearish": "негатив", "neutral": "сторона неясна"}[syn["direction"]]
                         if not self.sent_news.repeat([], "cluster", syn["direction"], syn["title"][16:]):
                             self.tg.send("\n\n".join([f"📣 <b>СЕРИЯ НОВОСТЕЙ</b> — {syn['n']} сообщений об одном за полчаса",
@@ -684,6 +710,9 @@ class Bot:
         """Причина отказа из-за общего фона (и код для теней) или ("", ""). Сигнал по графику одной бумаги не видит, что
         впереди событие, которого ждёт весь рынок, и какая тема его двигает: 06.11 бот шортил банк и индекс перед мирными переговорами."""
         base = self.risk.base_of(sig.symbol)
+        if getattr(self, "_shock_until", 0.0) > time.time():
+            # 08.11: после серии новостей (шок) сильный первый час индекса за неделю разворачивается (продолжение 32%, −3.4%): час не входим
+            return f"первый час после серии новостей: ещё {int((self._shock_until - time.time()) / 60)} мин", "shock"
         if self.corpcal:
             why = self.corpcal.entry_block(base, self._sector_of(base), sig.direction)
             if why:
@@ -985,8 +1014,15 @@ class Bot:
                         os._exit(3)
                 except Exception as e:  # noqa: BLE001
                     self.tg.send(f"Обновление не удалось: {e}")
+            elif c == "/expect":
+                parts = []
+                if self.expect_rules:
+                    parts.append(fmt.block("🎯 Ожидания и расхождения", *[fmt.esc(x) for x in self.expect_rules.text(14)]))
+                if self.eventtrades:
+                    parts.append(fmt.block("Событийные сделки (A: ЦБ по облигациям, B: отчёт хуже ожиданий)", *[fmt.esc(x) for x in self.eventtrades.text()]))
+                self.tg.send("\n\n".join(parts) if parts else "блок ожиданий недоступен", html=True)
             elif c == "/help":
-                self.tg.send("/status /why /shadow /analytics /market /stop /panic /resume /review /postmortem /approve /lessons /calendar /log /update")
+                self.tg.send("/status /why /shadow /expect /analytics /market /stop /panic /resume /review /postmortem /approve /lessons /calendar /log /update")
 
     def _auto_apply(self):
         return bool(self.s.get("learning.auto_apply")) and self.s.mode != "live"
@@ -1346,6 +1382,17 @@ class Bot:
                             log.warning("проверка вердиктов драйвера: %s", e)
                     self.exe.reconcile()
                 event_block = self.eventplay.tick(now, equity, positions) if self.eventplay else False
+                if self.eventtrades:
+                    self.eventtrades.tick(now, equity, positions)   # правила A/B: подтверждение рынком и входы
+                if self.pricesignals and self.pricesignals.due(now):
+                    try:
+                        found = self.pricesignals.scan(self.ex.universe(), now)
+                        if found:
+                            self.tg.send("\n\n".join(["👻 <b>ЦЕНОВЫЕ ТЕНИ ЗА ДЕНЬ</b> (без денег, 4–6 недель проверки)",
+                                                       fmt.block("Сигналы", *[fmt.esc(x) for x in self.pricesignals.text(found)]),
+                                                       fmt.block("Итог", "через 3 дня появится в /shadow по причинам «пробой», «разворот»")]), html=True)
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("ценовые тени: %s", e)
                 if now - self.last["scan"] >= iv["scan_sec"]:
                     self.last["scan"] = now
                     if event_block:

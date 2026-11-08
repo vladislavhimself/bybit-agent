@@ -26,6 +26,10 @@ def news_score(base, events, min_importance, now=None, playbook=None, df1h=None,
     плюс есть только у бычьих новостей по бумаге важностью 7+ (+0.14% за 4 ч, +0.33% за сутки)."""
     now = now or time.time()
     total, reasons, used = 0.0, [], []
+    if mode == "off":
+        # 08.11.2026, решение владельца: сторона сделки никогда не берётся из текста новости. 7 лет, 2 млн сообщений, 30 тем:
+        # знак по словам 45–52% на всех горизонтах. Направление даёт только расхождение с ожиданием, подтверждённое рынком (bot/eventtrades.py)
+        return 0.0, [], []
     for e in events:
         if e["importance"] < min_importance or e["direction"] == "neutral":
             continue

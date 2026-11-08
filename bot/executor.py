@@ -32,6 +32,7 @@ class Executor:
         self._sma_cache, self._sma_bad = {}, {}
         self._audit_ts = self._recon_ts = 0.0
         self.last_deferred = 0
+        self.event_manager = None   # bot/eventtrades.py: сопровождение событийных сделок (ключ A:/B:)
 
     # ---------- открытие ----------
     def _tp_plan(self, symbol, qty, entry, dist, long):
@@ -89,7 +90,7 @@ class Executor:
         r = self.s.get("risk")
         e = self.s.get("entry") or {}
         price = ta.get("price_now") or ta["close"]
-        dist = ta["atr"] * r["stop_atr_mult"]
+        dist = getattr(sig, "stop_dist", None) or ta["atr"] * r["stop_atr_mult"]   # событийная сделка задаёт свой (аварийный) стоп
         long = sig.direction == "long"
         side = "Buy" if long else "Sell"
         if hasattr(self.ex, "trading_open") and not self.ex.trading_open(sig.symbol):
@@ -383,6 +384,13 @@ class Executor:
             return False
         r_now = (mark - e0) * sign / risk_dist
         hours = (time.time() - t["opened_ts"]) / 3600
+        em = getattr(self, "event_manager", None)
+        if em is not None and em.owns(t):
+            # сделка на расхождении с ожиданием (bot/eventtrades.py): выходы по причине — тезис, откат, предохранитель;
+            # стандартные правила (дневной тренд, тейки, защита прибыли) к ней не применяются. Стоп-заявка брокера остаётся аварийной
+            if r_now > float(t.get("mfe_r") or 0) + 0.05:
+                self.j.update_mfe(tid, r_now)
+            return bool(em.manage(t, mark, pos))
         daily_mode = bool(r.get("daily_trend_exit"))
         sma = None
         if daily_mode:
