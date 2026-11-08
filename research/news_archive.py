@@ -85,7 +85,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--channels", nargs="+", required=True)
     ap.add_argument("--since", default="2024-10-01")
+    ap.add_argument("--db", default=DB, help="файл базы (крипто-каналы складываем отдельно: data/crypto_archive.db)")
     a = ap.parse_args()
+    DB = a.db
     since_ts = int(datetime.strptime(a.since, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
     s = requests.Session()
     for ch in a.channels:
