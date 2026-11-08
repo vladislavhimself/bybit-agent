@@ -184,8 +184,11 @@ markets:
     # B: отчёт «хуже ожиданий» → через earn_confirm_min бумага не выросла больше earn_max_up_pct → шорт (81 случай: 59%, +0.7%).
     # Выходы по причине: тезис / откат trail_pct от лучшей цены (после trail_min_pct) / предохранитель max_days; стоп только аварийный stop_pct.
     # Размер: ступень low и потолок риска risk_cap_pct капитала (первые сделки уменьшенным размером)
+    # Размер расхождения (в типичных отклонениях: прибыль и дивиденд 15%, ставка 0.5 п.п.): шорт от short_size_min, лонг (правило C) от long_size_min
+    # и только при long_enabled — «чуть лучше ожиданий» лонг не даёт (бумага потом неделю отстаёт), работает только большое расхождение (30%+)
     events: {enabled: true, symbols: [IMOEXF], cbr_wait_hours: 4, cbr_rgbi_min_pct: 0.15, earn_confirm_min: 60, earn_max_up_pct: 0.2,
-             trail_pct: 3.0, trail_min_pct: 1.0, stop_pct: 5.0, max_days: 14, risk_cap_pct: 0.35}
+             trail_pct: 3.0, trail_min_pct: 1.0, stop_pct: 5.0, max_days: 14, risk_cap_pct: 0.35,
+             short_size_min: 1.0, long_size_min: 2.0, long_enabled: false}
     # ценовые сигналы по дневным свечам — только тени (пробой 20 дн с объёмом ≥1.5× вниз/вверх, разворот после −12% к индексу за 5 дн)
     pricesignals: {enabled: true, hour_msk: 19, lookback: 20, vol_mult: 1.5, reversal_pct: -12, stop_pct: 5.0, index_symbols: [IMOEXF, SBERF]}
     shock_block_min: 60                 # после серии новостей (шок) новых входов нет час: сильный первый час на шоке за неделю разворачивается

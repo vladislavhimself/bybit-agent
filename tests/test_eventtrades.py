@@ -161,6 +161,28 @@ assert not any(x["base"] == "MGNT" for x in et4.state["earn"])
 info = b4.expect_rules.on_event({"event_type": "earnings", "affected_symbols": ["PLZL"]}, "Полюс: результаты лучше ожиданий", "e4", ts, "tg:x")
 et4.on_surprise(info, "x", ts, "e4")
 assert len([x for x in et4.state["earn"] if x["base"] == "PLZL"]) == 1
+# размер расхождения: прибыль против консенсуса. Сильно ниже → шорт; сильно выше → лонг только при long_enabled
+b5 = Bot()
+et5 = EventTrades(b5)
+b5.expect_rules.ingest({"id": "k1", "title": "#PLZL #Прогноз Консенсус-прогноз Интерфакса: чистая прибыль Полюса прогнозируется на уровне 100 млрд рублей", "summary": "", "published_ts": ts - 5 * 86400})
+info = b5.expect_rules.on_event({"event_type": "earnings", "affected_symbols": ["PLZL"]}, "Чистая прибыль Полюса по МСФО за полугодие составила 60 млрд рублей", "k2", ts, "rss")
+assert info and info["kind"] == "np" and abs(info["surprise"] + 0.4) < 1e-6 and info["size"] > 2, info
+assert et5.side_for(info) == "short"
+info_up = b5.expect_rules.on_event({"event_type": "earnings", "affected_symbols": ["PLZL"]}, "Чистая прибыль Полюса по МСФО за полугодие составила 150 млрд рублей", "k3", ts, "rss")
+assert info_up and info_up["surprise"] > 0.49 and et5.side_for(info_up) is None, "лонг выключен флагом"
+b5.s.d["events"]["long_enabled"] = True
+assert et5.side_for(info_up) == "long"
+assert et5.side_for({"kind": "np", "surprise": 0.2, "size": 1.3}) is None, "чуть лучше — не лонг"
+assert et5.side_for({"kind": "np", "surprise": -0.1, "size": 0.7}) is None, "чуть хуже — не шорт"
+et5.on_surprise(info_up, "Полюс сильно лучше", ts, "k3")
+assert et5.state["earn"][0]["side"] == "long"
+b5.ex.px["PLZL"] = 1030.0   # удержала рост → лонг
+et5.tick(time.time(), 300000, [])
+assert b5.exe.opened and b5.exe.opened[0][1] == "long" and b5.exe.opened[0][5].startswith("C:"), b5.exe.opened
+tc = {"id": 3, "symbol": "PLZL", "side": "Buy", "entry": 1030.0, "entry_init": 1030.0, "stop_init": 978.5, "opened_ts": time.time() - 7200, "event_key": b5.exe.opened[0][5], "mfe_r": 0}
+assert et5.manage(tc, 1040.0, {}) is False
+assert et5.manage(tc, 999.0, {}) is True and "тезис" in b5.exe.closed[-1][1]
+
 # тезис B: цена снова выше уровня до новости
 key = b3.exe.opened[0][5]
 tb = {"id": 2, "symbol": "PLZL", "side": "Sell", "entry": 998.0, "entry_init": 998.0, "stop_init": 1047.9, "opened_ts": time.time() - 7200, "event_key": key, "mfe_r": 0}

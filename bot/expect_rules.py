@@ -37,6 +37,12 @@ BEAT = re.compile(r"(выше|лучше|превысил\w*|опередил\w*
 MISS = re.compile(r"(ниже|хуже|не оправдал\w*|не дотянул\w*|слабее|разочаров\w*)\s(\w+\s){0,3}(консенсус|ожидани|прогноз)", re.I)
 INLINE = re.compile(r"(совпал\w*|в рамках|в соответствии|на уровне|в русле)\s(\w+\s){0,2}(консенсус|ожидани|прогноз)", re.I)
 REPORT = re.compile(r"отчита|отчёт|отчет|результат|МСФО|РСБУ|прибыл|выручк|EBITDA", re.I)
+# консенсус по чистой прибыли с числом (Интерфакс в лентах, cbrstocks #Прогноз) и факт из отчёта — для РАЗМЕРА расхождения
+BIGNUM = r"(\d{1,4}(?:[  ]\d{3})*(?:[.,]\d{1,3})?)"
+NP_CONS = re.compile(r"консенсус[^\n]{0,200}?(чист\w+ прибыл\w*|прибыл\w*)[^\n]{0,100}?" + BIGNUM + r"\s?(млрд|трлн)", re.I)
+NP_CONS2 = re.compile(r"(чист\w+ прибыл\w*)[^\n]{0,80}?(прогнозиру\w+|ожида\w+|консенсус\w*)[^\n]{0,100}?" + BIGNUM + r"\s?(млрд|трлн)", re.I)
+NP_FACT = re.compile(r"чист\w+ прибыл\w*[^\n]{0,120}?(составил\w*|выросл\w* до|увеличил\w* до|снизил\w* до|сократил\w* до|упал\w* до|в размере|достигл\w*)\s?" + BIGNUM + r"\s?(млрд|трлн)", re.I)
+NP_PERIOD = re.compile(r"МСФО|РСБУ|квартал|полугод|9 месяц|девять месяц|за год", re.I)
 HASHTAG = re.compile(r"#([A-Z]{3,5})\b")
 NAMES = {"SBER": r"Сбер\w*", "GAZP": r"Газпром\b|Газпрома\b|Газпрому\b", "LKOH": r"Лукойл", "ROSN": r"Роснефт", "NVTK": r"Новат[эе]к", "GMKN": r"Норникел|Норильск",
          "PLZL": r"Полюс", "X5": r"\bX5\b|Пятёрочк|Пятерочк|ИКС 5", "YDEX": r"Яндекс", "TATN": r"Татнефт", "SNGS": r"Сургутнефтегаз", "MGNT": r"Магнит\b",
@@ -49,7 +55,12 @@ NAMES = {"SBER": r"Сбер\w*", "GAZP": r"Газпром\b|Газпрома\b|�
          "BELU": r"Белуга|Novabev", "ETLN": r"Эталон", "LSRG": r"\bЛСР\b", "SELG": r"Селигдар", "UGLD": r"ЮГК|Южуралзолото", "CNRU": r"Циан|ЦИАН", "DOMRF": r"ДОМ\.РФ"}
 NAME_RX = {k: re.compile(v, re.I) for k, v in NAMES.items()}
 # типичный разброс расхождения: ставка в п.п., дивиденд в долях, инфляция в п.п. за неделю (research/news_expectations.py, news_earnings_cpi.py)
-TYPICAL = {"cbr": 0.5, "div": 0.15, "cpi": 0.05}
+TYPICAL = {"cbr": 0.5, "div": 0.15, "cpi": 0.05, "np": 0.15}   # np — чистая прибыль против консенсуса, в долях
+
+
+def bignum(s, unit):
+    v = float(str(s).replace(" ", "").replace(" ", "").replace(",", "."))
+    return v * 1000 if unit.lower().startswith("трлн") else v
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS expect_items(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, kind TEXT, base TEXT, value REAL,
@@ -111,6 +122,13 @@ class ExpectRules:
                     v = num(m.group(3))
                     if v > 0:
                         n += self._add(ts, "div", base, v, source_of(text), item.get("title", ""), item.get("id"))
+        if "консенсус" in text.lower() and "прибыл" in text.lower():
+            base = company_of(text)
+            m = NP_CONS.search(text[:700]) or NP_CONS2.search(text[:700])
+            if base and m:
+                v = bignum(m.group(2) if m.re is NP_CONS else m.group(3), m.group(3) if m.re is NP_CONS else m.group(4))
+                if v > 0:
+                    n += self._add(ts, "np", base, v, source_of(text), item.get("title", ""), item.get("id"))
         if "инфляци" in text.lower() and CPI_WEEK.search(text) and not FOREIGN.search(head):
             m = CPI_FACT.search(text)
             if m:
@@ -200,6 +218,16 @@ class ExpectRules:
         if not base:
             return None
         head = text[:400]
+        # отчёт с числом: факт чистой прибыли против консенсуса из лент за 30 дней → размер расхождения в типичных отклонениях (15%)
+        mf = NP_FACT.search(head) if "прибыл" in head.lower() and NP_PERIOD.search(head) else None
+        if mf:
+            exp, n, age = self.expectation("np", base, ts, days=30)
+            if exp:
+                fact = bignum(mf.group(2), mf.group(3))
+                if fact > 0 and 0.2 <= fact / exp <= 5:
+                    surprise = (fact - exp) / exp
+                    sid = self.record("np", base, exp, fact, surprise, n, age, news_id, title, "прибыль против консенсуса")
+                    return {"kind": "np", "base": base, "surprise": surprise, "size": self.size_of("np", surprise), "sid": sid, "strong": n >= 1}
         if REPORT.search(head) and (BEAT.search(head) or MISS.search(head) or INLINE.search(head)):
             sign = 1 if BEAT.search(head) else (-1 if MISS.search(head) else 0)
             sid = self.record("earn", base, None, None, float(sign), n_sources=1, news_id=news_id, title=title,
@@ -254,6 +282,8 @@ class ExpectRules:
                     what = {1.0: "отчёт лучше ожиданий", -1.0: "отчёт хуже ожиданий", 0.0: "отчёт как ждали"}.get(float(s["surprise"] or 0), "отчёт")
                 elif s["kind"] == "cbr":
                     what = f"ставка: ждали {s['expected']:g}, факт {s['actual']:g} ({s['surprise']:+.2f} п.п.)"
+                elif s["kind"] == "np":
+                    what = f"прибыль: консенсус {s['expected']:.0f} млрд, факт {s['actual']:.0f} ({s['surprise'] * 100:+.0f}%)"
                 else:
                     what = f"{s['kind']}: ждали {s['expected']}, факт {s['actual']}"
                 res = f", результат {s['result_pct']:+.1f}%" if s["result_pct"] is not None else ""

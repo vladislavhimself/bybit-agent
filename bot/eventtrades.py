@@ -130,16 +130,33 @@ class EventTrades:
                                     fmt.block("История", "29 решений 2019–2026: неделя 72% в плюс, 2 недели +2.6% на сделку")]), html=True)
 
     # ---------- B: отчёт хуже ожиданий ----------
+    def side_for(self, info):
+        """Сторона кандидата по расхождению или None. B (шорт): отчёт «хуже ожиданий» по формулировке, либо число (прибыль/дивиденд) ниже
+        консенсуса на short_size_min типичных отклонений. C (лонг, по флагу long_enabled): число выше на long_size_min (2 σ = 30%+):
+        «чуть лучше» лонг не даёт (бумага потом неделю отстаёт), только большое расхождение (8 дивидендных случаев: неделя +2.5%, 88%)."""
+        if not info:
+            return None
+        kind, s, size = info.get("kind"), float(info.get("surprise") or 0), float(info.get("size") or 0)
+        if kind == "earn":
+            return "short" if s < 0 else None
+        if kind in ("np", "div"):
+            if s < 0 and size >= float(self.cfg("short_size_min", 1.0)):
+                return "short"
+            if s > 0 and size >= float(self.cfg("long_size_min", 2.0)) and self.cfg("long_enabled", False):
+                return "long"
+        return None
+
     def on_surprise(self, info, title, ts, news_id=""):
-        """Из expect_rules.on_event. Берём только отчёты «хуже ожиданий»: кандидат в шорт с проверкой через час."""
-        if not info or info.get("kind") != "earn" or info.get("surprise", 0) >= 0:
+        """Из expect_rules.on_event: кандидат в сделку с проверкой рынком через час."""
+        side = self.side_for(info)
+        if not side:
             return
         base = info["base"]
         if any(x["base"] == base and ts - x["ts"] < 5 * 86400 for x in self.state["earn"]):
             return
-        sym = self._symbol_for(base)
+        sym = self._symbol_for(base) if side == "short" else (self.b.ex.news_pick(base) if hasattr(self.b.ex, "news_pick") else None)
         if not sym:
-            log.info("B: %s — нет инструмента для шорта", base)
+            log.info("%s: %s — нет инструмента", "B" if side == "short" else "C", base)
             return
         try:
             pre = float(self.b.ex.last_price(sym) or 0)
@@ -148,9 +165,11 @@ class EventTrades:
         if pre <= 0:
             return
         self.state["earn"].append({"base": base, "sym": sym, "ts": int(ts), "pre": pre, "sid": info.get("sid"), "title": (title or "")[:120],
-                                   "check_ts": int(ts + float(self.cfg("earn_confirm_min", 60)) * 60), "done": False, "news_id": news_id})
+                                   "check_ts": int(ts + float(self.cfg("earn_confirm_min", 60)) * 60), "done": False, "news_id": news_id,
+                                   "side": side, "kind": info.get("kind"), "size": round(float(info.get("size") or 0), 2)})
         self._save()
-        log.info("B: кандидат %s (%s) по %.4g, проверка через %s мин", base, sym, pre, self.cfg("earn_confirm_min", 60))
+        log.info("%s: кандидат %s (%s) %s по %.4g, размер %.1f, проверка через %s мин", "B" if side == "short" else "C", base, sym, side, pre,
+                 float(info.get("size") or 0), self.cfg("earn_confirm_min", 60))
 
     def _symbol_for(self, base):
         pick = self.b.ex.news_pick(base) if hasattr(self.b.ex, "news_pick") else None
@@ -182,23 +201,31 @@ class EventTrades:
             if px <= 0:
                 continue
             move = (px / c["pre"] - 1) * 100
-            if move > float(self.cfg("earn_max_up_pct", 0.2)):
+            side = c.get("side", "short")
+            long = side == "long"
+            what = {"earn": "ОТЧЁТ ХУЖЕ ОЖИДАНИЙ", "np": f"ПРИБЫЛЬ {'ВЫШЕ' if long else 'НИЖЕ'} КОНСЕНСУСА", "div": f"ДИВИДЕНД {'ВЫШЕ' if long else 'НИЖЕ'} ОЖИДАНИЙ"}.get(c.get("kind"), "РАСХОЖДЕНИЕ")
+            size_txt = f" (размер {c['size']:.1f} σ)" if c.get("size") else ""
+            tol = float(self.cfg("earn_max_up_pct", 0.2))
+            failed = (move > tol) if not long else (move < -tol)
+            if failed:
                 if self.b.expect_rules and c.get("sid"):
-                    self.b.expect_rules.confirm(c["sid"], move, False, f"сделки нет: бумага выросла на {move:+.2f}% после отчёта")
-                self.b.tg.send("\n\n".join([f"📉 <b>ОТЧЁТ ХУЖЕ ОЖИДАНИЙ: {fmt.esc(fmt.label(c['sym']))} — СДЕЛКИ НЕТ</b>",
-                                            fmt.block("Проверка", f"За час бумага {move:+.2f}%: рынок понял иначе, не шортим"),
+                    self.b.expect_rules.confirm(c["sid"], move, False, f"сделки нет: бумага {move:+.2f}% за час — рынок понял иначе")
+                self.b.tg.send("\n\n".join([f"{'📈' if long else '📉'} <b>{what}: {fmt.esc(fmt.label(c['sym']))} — СДЕЛКИ НЕТ</b>",
+                                            fmt.block("Проверка", f"За час бумага {move:+.2f}%: рынок понял иначе, {'не покупаем' if long else 'не шортим'}"),
                                             fmt.block("Новость", fmt.esc(c["title"]))]), html=True)
                 continue
-            why = f"отчёт хуже ожиданий, за час бумага {move:+.2f}% (не выросла)"
-            key = f"B:{c['base']}-{datetime.fromtimestamp(c['ts'], MSK).strftime('%Y%m%d')}"
-            opened = self._enter([c["sym"]], "short", key, why, equity, positions, {"pre_level": c["pre"], "sid": c.get("sid"), "kind": "B"})
+            why = f"{what.lower()}{size_txt}, за час бумага {move:+.2f}% ({'удержала рост' if long else 'не выросла'})"
+            key = f"{'C' if long else 'B'}:{c['base']}-{datetime.fromtimestamp(c['ts'], MSK).strftime('%Y%m%d')}"
+            opened = self._enter([c["sym"]], side, key, why, equity, positions, {"pre_level": c["pre"], "sid": c.get("sid"), "kind": "C" if long else "B"})
             if self.b.expect_rules and c.get("sid"):
-                self.b.expect_rules.confirm(c["sid"], move, True, f"short: {', '.join(opened) if opened else 'вход не удался'}")
-            self.b.tg.send("\n\n".join([f"📉 <b>ОТЧЁТ ХУЖЕ ОЖИДАНИЙ: ШОРТ {fmt.esc(fmt.label(c['sym']))}</b>",
-                                        fmt.block("Подтверждение", f"За час после новости бумага {move:+.2f}% — продавцы остались"),
-                                        fmt.block("Сделка", f"{', '.join(opened) if opened else 'не открылась (см. лог)'}; выход — цена выше {c['pre']:g} (уровень до новости), "
+                self.b.expect_rules.confirm(c["sid"], move, True, f"{side}: {', '.join(opened) if opened else 'вход не удался'}")
+            hist = ("8 дивидендов выше ожиданий на 15%+ (2019–2026): неделя +2.5%, вверх 88%; «чуть лучше» лонг не даёт" if long
+                    else "81 отчёт 2019–2026: 2 недели 59% в плюс, +0.7% на сделку; лонг на «лучше ожиданий» не работает")
+            self.b.tg.send("\n\n".join([f"{'📈' if long else '📉'} <b>{what}: {'ЛОНГ' if long else 'ШОРТ'} {fmt.esc(fmt.label(c['sym']))}</b>",
+                                        fmt.block("Подтверждение", f"За час после новости бумага {move:+.2f}% — {'покупатели остались' if long else 'продавцы остались'}{size_txt}"),
+                                        fmt.block("Сделка", f"{', '.join(opened) if opened else 'не открылась (см. лог)'}; выход — цена {'ниже' if long else 'выше'} {c['pre']:g} (уровень до новости), "
                                                   f"откат {self.cfg('trail_pct', 3.0)}% от лучшей цены или {self.cfg('max_days', 14)} дней"),
-                                        fmt.block("История", "81 отчёт 2019–2026: 2 недели 59% в плюс, +0.7% на сделку; лонг на «лучше ожиданий» не работает"),
+                                        fmt.block("История", hist),
                                         fmt.block("Новость", fmt.esc(c["title"]))]), html=True)
         self.state["earn"] = keep
         self._save()
@@ -264,7 +291,7 @@ class EventTrades:
 
     # ---------- сопровождение: выходы по причине ----------
     def owns(self, t):
-        return str(t.get("event_key") or "").startswith(("A:", "B:"))
+        return str(t.get("event_key") or "").startswith(("A:", "B:", "C:"))
 
     def manage(self, t, mark, pos, now=None):
         """Вызывается исполнителем вместо его стандартных выходов. True — сделка закрыта."""
@@ -298,7 +325,7 @@ class EventTrades:
                 log.debug("RGBI для тезиса: %s", e)
             if last and ((not long and last >= pre) or (long and last <= pre)):
                 return exe._close_now(t, f"тезис сломался: облигации вернулись к уровню до решения ({last:.2f} против {pre:.2f})")
-        if key.startswith("B:") and pre and days >= 1 / 24:
+        if key.startswith(("B:", "C:")) and pre and days >= 1 / 24:
             if (not long and mark > float(pre)) or (long and mark < float(pre)):
                 return exe._close_now(t, f"тезис сломался: цена {mark:g} снова выше уровня до новости {pre:g}")
         return False
@@ -310,7 +337,7 @@ class EventTrades:
         done = set(self.state.get("done") or [])
         for t in self.b.j.closed_trades(60):
             key = t.get("event_key") or ""
-            if not key.startswith(("A:", "B:")) or key in done:
+            if not key.startswith(("A:", "B:", "C:")) or key in done:
                 continue
             meta = self.state["meta"].get(key) or {}
             if meta.get("sid"):
@@ -342,7 +369,7 @@ class EventTrades:
             lines.append(f"A: ждём облигации после решения ЦБ {c['actual']:g}% до {datetime.fromtimestamp(c['ts'] + float(self.cfg('cbr_wait_hours', 4)) * 3600, MSK):%H:%M} МСК")
         for x in self.state.get("earn") or []:
             if not x.get("done"):
-                lines.append(f"B: {x['base']} — проверка в {datetime.fromtimestamp(x['check_ts'], MSK):%H:%M} МСК (цена до новости {x['pre']:g})")
+                lines.append(f"{'C' if x.get('side') == 'long' else 'B'}: {x['base']} {x.get('side', 'short')} — проверка в {datetime.fromtimestamp(x['check_ts'], MSK):%H:%M} МСК (цена до новости {x['pre']:g})")
         open_keys = [t.get("event_key") for t in self.b.j.open_trades() if self.owns(t)]
         if open_keys:
             lines.append("Открыты событийные сделки: " + ", ".join(open_keys))
