@@ -40,6 +40,41 @@ TOPICS = [("ETF одобрен / приток", re.compile(r"ETF.{0,60}(approv|l
           ("кит / крупный перевод", re.compile(r"whale|transferred from unknown wallet|moved.{0,40}(BTC|ETH)", re.I), 0),
           ("листинг на бирже", re.compile(r"(Binance|Coinbase|Bybit|OKX|Upbit).{0,40}(lists?|listing|will list)", re.I), +1)]
 
+EXPWORD = re.compile(r"expect|estimate|forecast|consensus", re.I)
+NUMK = r"(-?\d+(?:\.\d+)?)\s?(%|K|k|M|B)?"
+EXP_PATS = [re.compile(r"(?:above|below|exceeding|topping|beating|missing|beat|versus|vs\.?|against|than)\s+(?:the\s+)?(?:market\s+)?(?:expectations?|estimates?|forecasts?|consensus)?\s*(?:of|for|at)?\s*" + NUMK, re.I),
+            re.compile(NUMK + r"\s+(?:expected|estimate|forecast|consensus)", re.I),
+            re.compile(r"(?:expectations?|estimates?|forecasts?|consensus)\s+(?:of|for|at)\s+(?:a\s+|an\s+)?(?:increase\s+of\s+|gain\s+of\s+|rise\s+of\s+)?" + NUMK, re.I),
+            re.compile(r"the\s+" + NUMK + r"\s+(?:estimate|forecast|consensus)", re.I)]
+ACT_PAT = re.compile(r"(?:rises?|rose|risen|comes?\s+in\s+at|came\s+in\s+at|hits?|holds?\s+(?:at|steady\s+at)|falls?\s+to|fell\s+to|slows?\s+to|increased?(?:\s+by)?|decreased?(?:\s+by)?|gained|dropped|rose\s+by|fell\s+by|by|at|to|of)\s+(?:just\s+)?" + NUMK, re.I)
+INLINE_PAT = re.compile(r"in line with|matching|as expected|matched", re.I)
+
+
+def _val(num, unit):
+    v = float(num)
+    return v * (1000 if unit in ("K", "k") else 1e6 if unit == "M" else 1e9 if unit == "B" else 1)
+
+
+def parse_macro(head):
+    """(факт, ожидание) из фразы вроде «CPI rises 3.7% YoY, exceeding the 3.6% estimate» или «Payrolls Rise by 165K, Beating 65K Forecast»."""
+    exp_m, exp_pos = None, None
+    for rx in EXP_PATS:
+        m = rx.search(head)
+        if m and (exp_pos is None or m.start() < exp_pos):
+            exp_m, exp_pos = m, m.start()
+    if not exp_m:
+        return None
+    expected = _val(exp_m.group(1), exp_m.group(2))
+    before = head[:exp_pos]
+    acts = [m for m in ACT_PAT.finditer(before)]
+    if not acts:
+        return None
+    a = acts[-1]
+    actual = _val(a.group(1), a.group(2))
+    if INLINE_PAT.search(head[max(0, exp_pos - 30):exp_pos + 10]) and abs(actual - expected) < 1e-9:
+        return None
+    return actual, expected
+
 
 def load_btc():
     df = pd.read_csv(ROOT / "data" / "history" / "BTCUSDT_60.csv").drop_duplicates("ts").sort_values("ts")
@@ -74,15 +109,13 @@ def main():
     ev = []
     for ch, ts, t in rows:
         t = t or ""
-        head = t[:300]
-        m = VS.search(head)
-        if m:
-            actual, expected = float(m.group(1)), float(m.group(2))
-        else:
-            m2 = VS2.search(head)
-            if not m2:
-                continue
-            expected, actual = float(m2.group(2)), float(m2.group(4))
+        head = t[:400]
+        if not EXPWORD.search(head):
+            continue
+        pair = parse_macro(head)
+        if not pair:
+            continue
+        actual, expected = pair
         kind = None
         for name, rx, hot in MACRO:
             if rx.search(head):
