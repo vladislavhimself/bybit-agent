@@ -21,7 +21,7 @@ scp -i "$KEY" $O /tmp/bybit-agent.tgz "$HOST:/opt/bybit-agent/"
 VER="$(git rev-parse --short HEAD 2>/dev/null) $(git log -1 --pretty=%s 2>/dev/null | python -c 'import sys; print(sys.stdin.read().strip()[:160])')"
 ssh -i "$KEY" $O "$HOST" "mkdir -p /opt/bybit-agent/data && printf '%s' \"$VER\" > /opt/bybit-agent/data/version.txt && printf 'обновление кода' > /opt/bybit-agent/data/restart_reason.txt"
 ssh -i "$KEY" $O "$HOST" 'cd /opt/bybit-agent && tar -xzf bybit-agent.tgz && rm bybit-agent.tgz \
-  && .venv/bin/pip install -q -r requirements.txt && systemctl restart bybit-agent && sleep 3 \
+  && .venv/bin/pip install -q -r requirements.txt && systemctl reset-failed bybit-agent; systemctl restart bybit-agent && sleep 3 \
   && systemctl --no-pager status bybit-agent | head -5'
 # Проверка живучести: через 30 секунд процесс должен быть тем же и без Traceback (3 секунды «active» ничего не доказывают — 08.11 бот
 # падал на 2-й секунде и перезапускался systemd каждые 34 секунды)
