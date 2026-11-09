@@ -1117,7 +1117,8 @@ class Bot:
         """Почему бот запустился, какая версия и что изменилось — чтобы каждый запуск был понятен владельцу."""
         import signal as _signal
         reason_p, ver_p, flag_p = DATA / "restart_reason.txt", DATA / "version.txt", DATA / "running.flag"
-        reason = reason_p.read_text(encoding="utf-8").strip() if reason_p.exists() else ""
+        # errors="replace": 08–09.11 файл версии с обрезанной посередине кириллицей ронял бот на старте 20 часов подряд (2148 перезапусков)
+        reason = reason_p.read_text(encoding="utf-8", errors="replace").strip() if reason_p.exists() else ""
         if reason_p.exists():
             reason_p.unlink()
         if not reason:
@@ -1133,7 +1134,10 @@ class Bot:
             _signal.signal(_signal.SIGTERM, _clean)
         except (ValueError, OSError):
             pass
-        ver = ver_p.read_text(encoding="utf-8").strip() if ver_p.exists() else ""
+        try:
+            ver = ver_p.read_text(encoding="utf-8", errors="replace").strip() if ver_p.exists() else ""
+        except OSError:
+            ver = ""
         lines = [f"Причина: {fmt.esc(reason)}"]
         if ver:
             lines.append(f"Версия: {fmt.esc(ver)}")
