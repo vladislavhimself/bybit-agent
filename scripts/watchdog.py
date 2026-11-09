@@ -45,13 +45,35 @@ def sh(cmd):
     return subprocess.run(cmd, shell=True, capture_output=True, text=True).stdout
 
 
-def checks():
+def nrestarts(unit):
+    out = subprocess.run(["systemctl", "show", "-p", "NRestarts", "--value", unit], capture_output=True, text=True).stdout.strip()
+    return int(out) if out.isdigit() else 0
+
+
+def last_traceback():
+    """Последняя строка ошибки из журнала службы — чтобы владелец видел причину, а не только факт падения."""
+    out = sh("journalctl -u bybit-agent --since '-20min' --no-pager -o cat 2>/dev/null | grep -E '^[A-Za-z]+Error|^[A-Za-z]+Exception|Error:' | tail -1")
+    return out.strip()[:200]
+
+
+def checks(st):
     problems = {}   # key -> text
     market = active_market()
-    if not active("bybit-agent"):
+    # 08–09.11: бот падал на старте и systemd поднимал его каждые 34 с; сторож заставал его то живым, то мёртвым и всю ночь
+    # писал «проблема»/«исправлено» (60 сообщений). Теперь рост счётчика перезапусков = отдельная проблема «падает по кругу»
+    nr = nrestarts("bybit-agent")
+    prev_nr = int(st.get("_nrestarts", nr))
+    hist = [x for x in st.get("_nr_hist", []) if time.time() - x[0] < 3600] + [(time.time(), nr)]
+    st["_nr_hist"], st["_nrestarts"] = hist, nr
+    per_hour = nr - hist[0][1] if len(hist) > 1 else 0
+    if nr > prev_nr or per_hour >= 3:
+        tb = last_traceback()
+        problems["bot_crashloop"] = (f"Бот падает и перезапускается: {per_hour} перезапусков за час (всего {nr}). Сделок нет."
+                                     + (f"\nОшибка: {tb}" if tb else ""))
+    elif not active("bybit-agent"):
         problems["bot_down"] = "Служба бота не запущена (bybit-agent). Сделок не будет, позиции под стопами брокера."
     log = LOGS / "bot.log"
-    if log.exists() and time.time() - log.stat().st_mtime > LOG_STALE_SEC:
+    if log.exists() and time.time() - log.stat().st_mtime > LOG_STALE_SEC and "bot_crashloop" not in problems:
         problems["bot_stale"] = f"Бот не пишет в лог уже {int((time.time() - log.stat().st_mtime) / 60)} мин: завис или без сети."
     if market == "moex":
         if not active("relay-bridge"):
@@ -103,12 +125,15 @@ def checks():
 
 # сколько проверок подряд (раз в минуту) проблема должна держаться, прежде чем писать: перезапуск бота при обновлении
 # занимает 3 секунды, переподключение к брокеру 1–3 секунды — это не проблемы
-CONFIRM = {"bot_down": 3, "bot_stale": 2, "bridge_down": 2, "broker_off": 3, "bridge_dead": 2, "relay_off": 3, "cf_off": 3}
-TITLES = {"bot_down": "бот не запущен", "bot_stale": "бот завис", "bridge_down": "мост к ретранслятору", "broker_off": "связь с брокером Cloudflare",
+CONFIRM = {"bot_down": 3, "bot_stale": 2, "bridge_down": 2, "broker_off": 3, "bridge_dead": 2, "relay_off": 3, "cf_off": 3, "bot_crashloop": 2}
+CLEAR_CHECKS = 5   # «исправлено» — только когда проблема не видна 5 проверок подряд (5 минут), иначе качели при перезапусках по кругу
+TITLES = {"bot_down": "бот не запущен", "bot_stale": "бот завис", "bot_crashloop": "бот падает и перезапускается по кругу",
+          "bridge_down": "мост к ретранслятору", "broker_off": "связь с брокером Cloudflare",
           "bridge_dead": "мост не отвечает", "relay_off": "московский ретранслятор", "cf_off": "брокер Cloudflare", "llm_money": "деньги на модели",
           "llm_key": "ключ Anthropic", "tinvest_key": "токен T-Invest", "bybit_key": "ключ Bybit", "disk": "диск", "mem": "память",
           "ssh_bruteforce": "подбор пароля SSH", "ssh_password_login": "вход по паролю SSH"}
 ADVICE = {"bot_down": "Зайти на сервер и запустить: systemctl restart bybit-agent. Позиции под стопами брокера.",
+          "bot_crashloop": "Перезапуск не поможет: нужно смотреть ошибку в журнале (journalctl -u bybit-agent) и чинить код или данные. Позиции под стопами брокера.",
           "bot_stale": "Перезапустить службу: systemctl restart bybit-agent.", "llm_money": "Пополнить баланс Anthropic.",
           "llm_key": "Проверить ANTHROPIC_API_KEY в .env.", "tinvest_key": "Выпустить новый токен T-Invest и записать в .env.",
           "relay_off": "Проверить московский сервер: systemctl status relay-agent.", "disk": "Почистить logs/ и старые архивы."}
@@ -116,32 +141,47 @@ ADVICE = {"bot_down": "Зайти на сервер и запустить: syste
 
 def main():
     st = json.loads(STATE.read_text()) if STATE.exists() else {}
-    cnt = st.get("_cnt", {})
-    problems = checks()
+    cnt = st.get("_cnt", {})          # сколько проверок подряд проблема видна
+    clear = st.get("_clear", {})      # сколько проверок подряд проблема НЕ видна (после того как о ней написали)
+    alerted = st.get("_alert", {})    # key -> время последнего сообщения о проблеме
+    opened = st.get("_open", {})      # key -> когда проблема впервые подтвердилась
+    problems = checks(st)
     now = time.time()
     for key in list(cnt):
         if key not in problems:
             cnt.pop(key)
     for key, text in problems.items():
         cnt[key] = cnt.get(key, 0) + 1
+        clear.pop(key, None)
         if cnt[key] < CONFIRM.get(key, 1):
             continue
-        if now - st.get(key, 0) > REPEAT_SEC:
+        opened.setdefault(key, now)
+        # одно сообщение на проблему, напоминание не чаще раза в 6 часов — и после «исправлено» тоже (качели не рассылаем)
+        if now - alerted.get(key, 0) > REPEAT_SEC:
             parts = ["🔧 <b>ТЕХНИЧЕСКАЯ ПРОБЛЕМА</b>: " + TITLES.get(key, key),
                      "<b>Что случилось</b>\n" + text.replace("<", "&lt;"),
                      "<b>Проверено</b>\n" + f"{cnt[key]} раз подряд с интервалом в минуту"]
             if ADVICE.get(key):
                 parts.append("<b>Что делать</b>\n" + ADVICE[key])
             tg("\n\n".join(parts), html=True)
-            st[key] = now
-    for key in list(st):
-        if key in ("_", "_cnt"):
+            alerted[key] = now
+    for key in list(opened):
+        if key in problems:
             continue
-        if key not in problems:
-            if st[key] > 0:
-                tg("✅ <b>ИСПРАВЛЕНО</b>: " + TITLES.get(key, key) + "\n\n<b>Что было</b>\n" + key, html=True)
+        clear[key] = clear.get(key, 0) + 1
+        if clear[key] >= CLEAR_CHECKS:
+            mins = int((now - opened[key]) / 60)
+            tg("✅ <b>ИСПРАВЛЕНО</b>: " + TITLES.get(key, key) + f"\n\n<b>Что было</b>\n{TITLES.get(key, key)}, длилось {mins} мин; "
+               f"сейчас {CLEAR_CHECKS} проверок подряд в норме", html=True)
+            opened.pop(key)
+            clear.pop(key, None)
+    for key in list(alerted):   # через сутки без проблемы — забываем, чтобы новое событие сообщалось сразу
+        if key not in problems and now - alerted[key] > 24 * 3600:
+            alerted.pop(key)
+    st["_cnt"], st["_clear"], st["_alert"], st["_open"] = cnt, clear, alerted, opened
+    for key in list(st):   # записи старого формата (key -> ts) больше не нужны
+        if not key.startswith("_"):
             st.pop(key)
-    st["_cnt"] = cnt
     STATE.write_text(json.dumps(st))
     # пульс брокеру: если сервер замолчит целиком, брокер сам напишет в Telegram
     key, ws = os.getenv("RELAY_KEY", ""), os.getenv("RELAY_WS", "")
