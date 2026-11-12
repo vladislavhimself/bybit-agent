@@ -178,7 +178,9 @@ markets:
     theme: {enabled: true, every_min: 60, every_min_night: 180, min_confidence: 0.6, max_age_min: 180}   # ночью и в выходные раз в 3 часа
     # разбор каждой убыточной сделки утром сильной моделью; урок принимается командой /approve
     postmortem: {enabled: true, hour_msk: 7, max_per_run: 5}
-    notify: {news_repeat_hours: 12}     # одна и та же новость (от разных каналов) в Telegram один раз за столько часов; 0 — выключить
+    # only_trades (12.11.2026, решение владельца): в Telegram только сделки, стопы, баланс и технические проблемы — без «важных новостей»,
+    # серий, напоминаний о ЦБ, ценовых теней и «сделки нет». Всё это по-прежнему в логе и в командах /expect /shadow
+    notify: {news_repeat_hours: 12, only_trades: true}
     # 08.11.2026 (решение владельца): сделки на расхождении с ожиданием, подтверждённом рынком (bot/eventtrades.py, bot/expect_rules.py).
     # A: решение ЦБ → через cbr_wait_hours RGBI сдвинулся на cbr_rgbi_min_pct → индекс в ту же сторону (29 случаев: неделя 72%, 2 нед +2.6%).
     # B: отчёт «хуже ожиданий» → через earn_confirm_min бумага не выросла больше earn_max_up_pct → шорт (81 случай: 59%, +0.7%).

@@ -33,6 +33,14 @@ class EventPlay:
         self.traded = set()
         self.symbols = (bot.s.get("moex.event_symbols") or ["IMOEXF", "SBERF"])
 
+    def _info(self, text, html=True):
+        """Информационное сообщение: при notify.only_trades владелец его не получает (см. Bot._info)."""
+        f = getattr(self.b, "_info", None)
+        if f:
+            f(text, html=html)
+        else:
+            self.b.tg.send(text, html=html)
+
     # ---------- до события ----------
     def _cbr_events(self, now, ahead_sec=25 * 60):
         return [e for e in self.b.cal.upcoming(1, now) if e.get("impact") == "high" and "ЦБ" in (e.get("title") or "")
@@ -116,7 +124,7 @@ class EventPlay:
                 et.arm_cbr(day, it.get("published_ts") or now, actual, cons, sid)
                 cons_txt = (f"{cons:g}% ({src}); факт {'ЖЁСТЧЕ' if actual > cons else 'МЯГЧЕ' if actual < cons else 'как ждали'}"
                             + (f" на {abs(actual - cons):g} п.п." if actual != cons else "")) if cons is not None else "неизвестен"
-                self.b.tg.send("\n\n".join([
+                self._info("\n\n".join([
                     f"🏦 <b>РЕШЕНИЕ ЦБ: {actual:g}%</b>",
                     fmt.block("Консенсус", fmt.esc(cons_txt)),
                     fmt.block("Что делаю", f"Сторону по словам не беру. Через {et.cfg('cbr_wait_hours', 4)} ч смотрю индекс облигаций RGBI: "

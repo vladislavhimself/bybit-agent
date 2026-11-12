@@ -31,6 +31,14 @@ class EventTrades:
         self._http = None
         self._rgbi_cache = (0.0, None)
 
+    def _info(self, text, html=True):
+        """Информационное сообщение: при notify.only_trades владелец его не получает (см. Bot._info)."""
+        f = getattr(self.b, "_info", None)
+        if f:
+            f(text, html=html)
+        else:
+            self.b.tg.send(text, html=html)
+
     def cfg(self, k, d=None):
         c = self.b.s.get("events") or {}
         return c.get(k, d)
@@ -102,10 +110,10 @@ class EventTrades:
             last = self.rgbi_last(now)
         except Exception as e:  # noqa: BLE001
             log.warning("RGBI после решения не получен: %s", e)
-            self.b.tg.send(fmt.block("🏦 Решение ЦБ: сделки нет", "Не удалось получить индекс облигаций RGBI, подтверждения нет"), html=True)
+            self._info(fmt.block("🏦 Решение ЦБ: сделки нет", "Не удалось получить индекс облигаций RGBI, подтверждения нет"), html=True)
             return
         if not pre or not last:
-            self.b.tg.send(fmt.block("🏦 Решение ЦБ: сделки нет", "Нет данных RGBI до/после решения"), html=True)
+            self._info(fmt.block("🏦 Решение ЦБ: сделки нет", "Нет данных RGBI до/после решения"), html=True)
             return
         chg = (last / pre - 1) * 100
         thr = float(self.cfg("cbr_rgbi_min_pct", 0.15))
@@ -114,7 +122,7 @@ class EventTrades:
         if abs(chg) < thr:
             if self.b.expect_rules and c.get("sid"):
                 self.b.expect_rules.confirm(c["sid"], chg, False, "сделки нет: облигации не сдвинулись (рынок закладывал)")
-            self.b.tg.send("\n\n".join([f"🏦 <b>РЕШЕНИЕ ЦБ {c['actual']:g}%: СДЕЛКИ НЕТ</b>", fmt.block("Облигации", fmt.esc(expl)),
+            self._info("\n\n".join([f"🏦 <b>РЕШЕНИЕ ЦБ {c['actual']:g}%: СДЕЛКИ НЕТ</b>", fmt.block("Облигации", fmt.esc(expl)),
                                         fmt.block("Почему", f"Сдвиг меньше {thr}%: рынок это решение уже закладывал, направления нет")]), html=True)
             return
         direction = "short" if chg < 0 else "long"
@@ -210,7 +218,7 @@ class EventTrades:
             if failed:
                 if self.b.expect_rules and c.get("sid"):
                     self.b.expect_rules.confirm(c["sid"], move, False, f"сделки нет: бумага {move:+.2f}% за час — рынок понял иначе")
-                self.b.tg.send("\n\n".join([f"{'📈' if long else '📉'} <b>{what}: {fmt.esc(fmt.label(c['sym']))} — СДЕЛКИ НЕТ</b>",
+                self._info("\n\n".join([f"{'📈' if long else '📉'} <b>{what}: {fmt.esc(fmt.label(c['sym']))} — СДЕЛКИ НЕТ</b>",
                                             fmt.block("Проверка", f"За час бумага {move:+.2f}%: рынок понял иначе, {'не покупаем' if long else 'не шортим'}"),
                                             fmt.block("Новость", fmt.esc(c["title"]))]), html=True)
                 continue

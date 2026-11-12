@@ -294,6 +294,12 @@ class Bot:
             except Exception as e:  # noqa: BLE001
                 log.error("Разбор новости: %s\n%s", e, traceback.format_exc())
 
+    def _info(self, text, html=True):
+        """Информационные сообщения (новости, серии, напоминания, тени). notify.only_trades: true — владелец получает только сделки,
+        стопы, баланс и технические проблемы (решение 12.11.2026)."""
+        if not self.s.get("notify.only_trades"):
+            self.tg.send(text, html=html)
+
     def _analyze_item(self, it, prefiltered=False):
         whale_srcs = {f"tg:{c}" for c in (self.s.get("sources.whale_channels") or [])}
         ev = None
@@ -382,7 +388,7 @@ class Bot:
                         self._shock_until = time.time() + float(self.s.get("shock_block_min", 60) or 0) * 60   # за первым часом шока не бежим
                         d = {"bullish": "позитив", "bearish": "негатив", "neutral": "сторона неясна"}[syn["direction"]]
                         if not self.sent_news.repeat([], "cluster", syn["direction"], syn["title"][16:]):
-                            self.tg.send("\n\n".join([f"📣 <b>СЕРИЯ НОВОСТЕЙ</b> — {syn['n']} сообщений об одном за полчаса",
+                            self._info("\n\n".join([f"📣 <b>СЕРИЯ НОВОСТЕЙ</b> — {syn['n']} сообщений об одном за полчаса",
                                                        fmt.block("О чём", fmt.esc(syn["title"][16:])),
                                                        fmt.block("Оценка", f"Считаю одним событием важности 8 ({d}): стопы встречных позиций подтягиваю, тему рынка пересчитываю")]), html=True)
                 except Exception as e:  # noqa: BLE001
@@ -398,7 +404,7 @@ class Bot:
                          fmt.block("Оценка", f"{d} для {fmt.esc(', '.join(ev['affected_symbols']) or 'всего рынка')}"
                                    + (f"; ожидали: {fmt.esc(ev['expected'])}, факт {'лучше' if ev['surprise'] > 0 else 'хуже'} ожиданий" if ev.get('expected') and abs(ev.get('surprise') or 0) >= 0.25 else "")),
                          fmt.block("Почему", fmt.esc(ev['reasoning']))]
-                self.tg.send("\n\n".join(parts), html=True)
+                self._info("\n\n".join(parts), html=True)
 
     # ---------- данные ----------
     def _klines_cached(self, symbol, interval, limit, max_age):
@@ -1038,7 +1044,7 @@ class Bot:
                     key = datetime.fromtimestamp(e["ts"], timezone.utc).strftime("%Y-%m-%d")
                     if self.j.kv_get("cbr_reminded") != key:
                         self.j.kv_set("cbr_reminded", key)
-                        self.tg.send("\n\n".join(["📌 <b>РЕШЕНИЕ ЦБ ЧЕРЕЗ 3 ДНЯ</b>",
+                        self._info("\n\n".join(["📌 <b>РЕШЕНИЕ ЦБ ЧЕРЕЗ 3 ДНЯ</b>",
                                                    fmt.block("Консенсус в настройках", f"{cons} %" if cons else "не задан, возьму из новостей"),
                                                    fmt.block("Что проверить", "Если рынок ждёт другую ставку, скажи — обновлю, иначе бот сыграет ложное расхождение")]), html=True)
                     break
@@ -1392,7 +1398,7 @@ class Bot:
                     try:
                         found = self.pricesignals.scan(self.ex.universe(), now)
                         if found:
-                            self.tg.send("\n\n".join(["👻 <b>ЦЕНОВЫЕ ТЕНИ ЗА ДЕНЬ</b> (без денег, 4–6 недель проверки)",
+                            self._info("\n\n".join(["👻 <b>ЦЕНОВЫЕ ТЕНИ ЗА ДЕНЬ</b> (без денег, 4–6 недель проверки)",
                                                        fmt.block("Сигналы", *[fmt.esc(x) for x in self.pricesignals.text(found)]),
                                                        fmt.block("Итог", "через 3 дня появится в /shadow по причинам «пробой», «разворот»")]), html=True)
                     except Exception as e:  # noqa: BLE001
