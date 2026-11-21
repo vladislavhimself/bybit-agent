@@ -63,7 +63,7 @@ class MoexExchange:
         self._uid2sym = {}
         self._figi2sym = {}
         self._turn_cache, self._turn_ts, self._iss_down_until, self._turn_thread = {}, 0.0, 0.0, None
-        self._realized, self._realized_ts = 0.0, 0.0
+        self._ledger = self._ledger_base = self._last_bal = self._desync_since = None   # песочница: результат фьючерсов по операциям
         self._ccache, self._clock = {}, threading.Lock()   # свечи в памяти: (uid, интервал) -> серия
         self._px = {}   # последние цены инструментов (заполняются сканом): нужны, чтобы не брать в список контракт, который не открыть
         self._ensure_account()
@@ -543,52 +543,155 @@ class MoexExchange:
     price_based_pnl = True   # результат сделки считаем по ценам входа и выхода, а не по платежам брокера
 
     def balances(self):
-        """Капитал = деньги + акции по рынку + вариационная маржа открытых фьючерсов.
-        totalAmountPortfolio не годится: в нём фьючерсы учтены по полной стоимости контракта."""
+        """Капитал счёта.
+        Боевой счёт: деньги + акции по рынку + вариационная маржа открытых фьючерсов (брокер сам проводит результат по деньгам).
+        Песочница: результат фьючерсов считается ПО СДЕЛКАМ (платежи покупок и продаж + открытые контракты по рынку), а вармаржа,
+        которую песочница проводит на клиринге, из денег вычитается. Причина (20.11.2026, −12 746 руб. на ровном месте): песочница
+        не зачисляет результат фьючерсной сделки в деньги, а проводит вармаржу только по позициям, открытым в момент клиринга.
+        Позиция, открытая вечером и закрытая днём до клиринга, оставляла в деньгах списание первого клиринга и ни рубля прибыли."""
         inst = self.instruments()   # заполняет карты figi/uid -> тикер до их использования
         p = self.call("OperationsService", "GetPortfolio", {"accountId": self.account, "currency": "RUB"})
-        cash = shares_upnl = fut_upnl = 0.0
+        cash = shares_upnl = fut_var = fut_price_upnl = fut_open = 0.0
+        open_qty = {}
         for x in p.get("positions", []):
             kind = x.get("instrumentType")
             if kind == "currency":
                 cash += q2f(x.get("quantity"))
             elif kind == "futures":
-                if x.get("varMargin") is not None:
-                    fut_upnl += q2f(x.get("varMargin"))
-                else:
-                    sym = self._figi2sym.get(x.get("figi")) or self._uid2sym.get(x.get("instrumentUid"))
-                    mult = inst[sym]["mult"] if sym in inst else 1.0
-                    fut_upnl += (q2f(x.get("currentPrice")) - q2f(x.get("averagePositionPrice"))) * q2f(x.get("quantity")) * mult
+                sym = self._figi2sym.get(x.get("figi")) or self._uid2sym.get(x.get("instrumentUid"))
+                mult = inst[sym]["mult"] if sym in inst else 1.0
+                qty, cur, avg = q2f(x.get("quantity")), q2f(x.get("currentPrice")), q2f(x.get("averagePositionPrice"))
+                by_price = (cur - avg) * qty * mult
+                fut_var += q2f(x.get("varMargin")) if x.get("varMargin") is not None else by_price
+                fut_price_upnl += by_price
+                fut_open += qty * cur * mult
+                if abs(qty) > 1e-9:
+                    key = sym or x.get("figi")
+                    open_qty[key] = open_qty.get(key, 0.0) + qty
             else:
                 shares_upnl += q2f(x.get("expectedYield"))
         shares = q2f(p.get("totalAmountShares")) + q2f(p.get("totalAmountEtf")) + q2f(p.get("totalAmountBonds"))
-        # Проверено по операциям песочницы 22.10: деньги = пополнение + платежи по акциям + комиссии + вариационная
-        # маржа (списывается при клиринге в 21:00). Платежи по фьючерсам в деньги не попадают, а их стоимость
-        # в totalAmountPortfolio — фикция. Поэтому капитал = деньги + акции по рынку + вармаржа открытых фьючерсов.
-        equity = cash + shares + fut_upnl
-        upnl = fut_upnl + shares_upnl
-        return {"equity": equity, "wallet": equity - upnl, "unrealised": upnl, "available": cash, "total_equity": equity}
+        legacy = cash + shares + fut_var
+        if self.mode == "live":
+            upnl = fut_var + shares_upnl
+            return {"equity": legacy, "wallet": legacy - upnl, "unrealised": upnl, "available": cash, "total_equity": legacy}
+        try:
+            led = self._fut_ledger()
+            if not self._ledger_in_sync(led, open_qty):
+                led = self._fut_ledger(force=True)   # сделка только что прошла: операции могли ещё не попасть в кэш
+                if not self._ledger_in_sync(led, open_qty):
+                    good = getattr(self, "_last_bal", None)
+                    first = getattr(self, "_desync_since", None) or time.time()
+                    self._desync_since = first
+                    if good is not None and time.time() - first < 120:
+                        return dict(good)      # операции ещё не дошли: держим последнее согласованное значение, а не скачок на стоимость контракта
+                    log.warning("капитал: операции и позиции по фьючерсам не сходятся дольше 2 минут (%s), принимаю как есть",
+                                self._ledger_residual(led, open_qty))
+                    self._ledger_base = self._ledger_residual(led, open_qty)
+            self._desync_since = None
+            equity = cash - led["var"] + led["fut"] + fut_open + shares
+        except Exception as e:  # noqa: BLE001
+            good = getattr(self, "_last_bal", None)
+            if good is not None:
+                log.debug("капитал: операции не получены (%s), держу последнее значение", str(e)[:80])
+                return dict(good)
+            log.warning("капитал: операции не получены (%s), считаю по старой формуле", str(e)[:100])
+            equity = legacy
+        upnl = fut_price_upnl + shares_upnl
+        out = {"equity": equity, "wallet": equity - upnl, "unrealised": upnl, "available": cash, "total_equity": equity, "legacy_equity": legacy}
+        self._last_bal = dict(out)
+        return out
 
-    def _realized_futures(self, portfolio):
-        """Песочница: сумма платежей по сделкам с фьючерсами плюс стоимость открытых контрактов по цене входа
-        = реализованный результат, который настоящий брокер провёл бы по деньгам при клиринге. Кэш 60 с."""
+    # ---------- песочница: результат фьючерсов по операциям ----------
+    OPS_START_TS = 1790812800.0   # 2026-10-01 UTC: раньше операций по счёту нет
+
+    def _ops_window(self, a, b, depth=0):
+        """Операции за [a, b]. Брокер отдаёт не больше 100 за запрос: полное окно делим пополам, пока не поместится."""
+        r = self.call("OperationsService", "GetOperations", {"accountId": self.account, "from": iso(a), "to": iso(b), "state": "OPERATION_STATE_EXECUTED"})
+        ops = r.get("operations", []) or []
+        if len(ops) >= 100 and b - a > 3600 and depth < 14:
+            mid = (a + b) / 2
+            return self._ops_window(a, mid, depth + 1) + self._ops_window(mid, b, depth + 1)
+        return ops
+
+    @staticmethod
+    def _op_ts(o):
+        try:
+            return datetime.strptime((o.get("date") or "")[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            return 0.0
+
+    def _fut_ledger(self, force=False):
+        """Суммы по всем операциям счёта: var — вармаржа клирингов (начисления и списания), fut — платежи по сделкам с фьючерсами,
+        net — чистое количество контрактов по тикеру из сделок (для сверки с открытыми позициями). Старые операции (старше двух суток)
+        суммируются один раз и держатся в памяти, хвост перечитывается раз в минуту или сразу после изменения позиций."""
         now = time.time()
-        if now - self._realized_ts < 60:
-            return self._realized
-        inst = self.instruments()
-        r = self.call("OperationsService", "GetOperations", {"accountId": self.account, "from": "2026-10-01T00:00:00Z",
-                                                              "to": iso(now + 60), "state": "OPERATION_STATE_EXECUTED"})
-        total = 0.0
-        for op in r.get("operations", []):
-            if op.get("instrumentType") == "futures" and op.get("operationType") in ("OPERATION_TYPE_BUY", "OPERATION_TYPE_SELL"):
-                total += q2f(op.get("payment"))
-        for x in portfolio.get("positions", []):
-            if x.get("instrumentType") == "futures":
-                sym = self._figi2sym.get(x.get("figi")) or self._uid2sym.get(x.get("instrumentUid"))
-                mult = inst[sym]["mult"] if sym in inst else 1.0
-                total += q2f(x.get("quantity")) * q2f(x.get("averagePositionPrice")) * mult
-        self._realized, self._realized_ts = total, now
-        return total
+        st = getattr(self, "_ledger", None)
+        if st and not force and now - st["ts"] < 60:
+            return st
+        if st is None:
+            st = {"frozen_ts": self.OPS_START_TS, "f_var": 0.0, "f_fut": 0.0, "f_net": {}, "ts": 0.0}
+        raw = self._ops_window(st["frozen_ts"] - 1, now + 60)
+        seen, ops = set(), []
+        for o in raw:
+            k = o.get("id") or (o.get("date"), o.get("operationType"), str(o.get("payment")), o.get("figi"))
+            if k not in seen:
+                seen.add(k)
+                ops.append(o)
+        new_frozen = now - 2 * 86400 if now - 2 * 86400 > st["frozen_ts"] + 86400 else st["frozen_ts"]
+        f_var, f_fut, f_net = st["f_var"], st["f_fut"], dict(st["f_net"])
+        t_var = t_fut = 0.0
+        t_net = {}
+        figi2sym, uid2sym = getattr(self, "_figi2sym", {}), getattr(self, "_uid2sym", {})
+        for o in ops:
+            ts = self._op_ts(o)
+            if ts < st["frozen_ts"]:
+                continue
+            typ = (o.get("operationType") or "").replace("OPERATION_TYPE_", "")
+            pay = q2f(o.get("payment"))
+            old = ts < new_frozen
+            if "VARMARGIN" in typ:
+                if old:
+                    f_var += pay
+                else:
+                    t_var += pay
+            elif o.get("instrumentType") == "futures" and (typ.startswith("BUY") or typ.startswith("SELL")):
+                sym = figi2sym.get(o.get("figi")) or uid2sym.get(o.get("instrumentUid")) or o.get("figi") or ""
+                try:
+                    qty = float(o.get("quantity") or 0) - float(o.get("quantityRest") or 0)
+                except (TypeError, ValueError):
+                    qty = 0.0
+                qty = qty if typ.startswith("BUY") else -qty
+                if old:
+                    f_fut += pay
+                    f_net[sym] = f_net.get(sym, 0.0) + qty
+                else:
+                    t_fut += pay
+                    t_net[sym] = t_net.get(sym, 0.0) + qty
+        net = dict(f_net)
+        for k, v in t_net.items():
+            net[k] = net.get(k, 0.0) + v
+        self._ledger = {"frozen_ts": new_frozen, "f_var": f_var, "f_fut": f_fut, "f_net": f_net, "ts": now,
+                        "var": f_var + t_var, "fut": f_fut + t_fut, "net": net}
+        return self._ledger
+
+    @staticmethod
+    def _ledger_residual(led, open_qty):
+        keys = set(led["net"]) | set(open_qty)
+        return {k: round(led["net"].get(k, 0.0) - open_qty.get(k, 0.0), 6) for k in keys
+                if abs(led["net"].get(k, 0.0) - open_qty.get(k, 0.0)) > 1e-6}
+
+    def _ledger_in_sync(self, led, open_qty):
+        """Количество контрактов по сделкам должно совпадать с открытыми позициями. Расхождение, которое было при первом расчёте
+        (например, контракт, ушедший в экспирацию), запоминается как исходное и ошибкой не считается."""
+        res = self._ledger_residual(led, open_qty)
+        base = getattr(self, "_ledger_base", None)
+        if base is None:
+            self._ledger_base = res
+            if res:
+                log.warning("капитал: по операциям и позициям фьючерсов исходное расхождение %s", res)
+            return True
+        return res == base
 
     def equity(self):
         b = self.balances()

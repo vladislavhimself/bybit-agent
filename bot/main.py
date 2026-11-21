@@ -1275,6 +1275,27 @@ class Bot:
                     names[sym] = f"{base}, вечный фьючерс"
         return {k: v for k, v in names.items() if v}
 
+    def _equity_formula_rebase(self, bal):
+        """Один раз после перехода на расчёт капитала песочницы по сделкам (21.11.2026): точка отсчёта «сегодня» была записана по старой
+        формуле, без сдвига новый капитал выглядел бы как прибыль дня. Неделя и пик записаны до расхождения — их не трогаем."""
+        legacy = bal.get("legacy_equity")
+        if legacy is None or self.j.kv_get("equity_ledger_v2"):
+            return
+        delta = float(bal["equity"]) - float(legacy)
+        self.j.kv_set("equity_ledger_v2", {"ts": int(time.time()), "delta": round(delta, 2)})
+        if abs(delta) < 1:
+            return
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if self.risk.day_key == today and self.risk.day_start > 0:
+            self.risk.day_start += delta
+            self.risk._save()
+        log.info("Капитал песочницы пересчитан по сделкам: было %.2f, стало %.2f (%+.2f)", legacy, bal["equity"], delta)
+        self.tg.send("\n\n".join([
+            "🧮 <b>КАПИТАЛ ПЕРЕСЧИТАН</b>",
+            fmt.block("Что изменилось", f"Было {fmt.money(legacy)} {fmt.CUR}, стало {fmt.money(bal['equity'])} {fmt.CUR} ({fmt.signed(delta)} {fmt.CUR})"),
+            fmt.block("Почему", "Песочница брокера не зачисляла в деньги результат фьючерсных сделок, закрытых до клиринга. "
+                      "Теперь он считается по самим сделкам. Денег не добавилось и не убавилось — исправлен учёт")]), html=True)
+
     def run(self):
         iv = self.s.get("intervals")
         self.cal.refresh(force=True)
@@ -1282,6 +1303,7 @@ class Bot:
             threading.Thread(target=self.divcal.refresh, kwargs={"force": True}, daemon=True, name="divcal").start()
         bal = self.ex.balances()
         equity = bal["equity"]
+        self._equity_formula_rebase(bal)
         self.risk.check(equity, realized=bal["wallet"])
         threading.Thread(target=self.news_loop, daemon=True, name="news").start()
         for i in range(int(self.s.get("llm.workers", 4) or 1)):
