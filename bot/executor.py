@@ -966,6 +966,11 @@ class Executor:
             reason = reason + f" (результат по цене {'стопа' if reason.startswith('стоп') else 'закрытия'} {exit_price:g}, точную цифру уточню по данным брокера)"
         else:
             pnl, exit_price, fees = res
+        mf = self._margin_fee_share(t)
+        if mf > 0:
+            pnl -= mf
+            fees = float(fees if fees is not None else (t.get("fees") or 0)) + mf
+            reason = reason + f" (плата брокеру за перенос шорта {mf:.2f})"
         self.j.close_trade(t["id"], exit_price, pnl, reason, fees)
         for d in (self._miss, self._tp_checked, self._pyr_checked, self._close_log):
             d.pop(t["id"], None)
@@ -976,6 +981,34 @@ class Executor:
         except Exception:  # noqa: BLE001
             tradable = None
         self.tg.send(fmt.close_message(t, pnl, pnl_r, reason, tradable, fees), html=True)
+
+    def _margin_fee_share(self, t, now=None):
+        """Доля сделки в плате за маржу. Брокер берёт её ночью за непокрытые позиции (шорт акций) одной суммой на счёт и в результат
+        сделки не включает: за октябрь–ноябрь 2026 так «потерялось» 175 руб. Каждое списание делится между шортами акций, открытыми
+        в этот момент, пропорционально их объёму."""
+        if t.get("side") != "Sell" or not hasattr(self.ex, "margin_fees"):
+            return 0.0
+        try:
+            inst = self.ex.instruments()
+            if (inst.get(t["symbol"]) or {}).get("kind") != "share":
+                return 0.0
+            end = float(now or time.time())
+            ops = self.ex.margin_fees(float(t["opened_ts"]), end)
+            if not ops:
+                return 0.0
+            rows = self.j._run("SELECT id, symbol, qty, qty_init, entry, mult, opened_ts, closed_ts FROM trades WHERE side='Sell' AND opened_ts<=?",
+                               (int(end),), "all")
+            shorts = [r for r in rows if (inst.get(r["symbol"]) or {}).get("kind") == "share"]
+            total = 0.0
+            for ts, amount in ops:
+                live = [r for r in shorts if r["opened_ts"] <= ts and (not r.get("closed_ts") or r["closed_ts"] >= ts or r["id"] == t["id"])]
+                w = {r["id"]: float(r.get("qty_init") or r["qty"] or 0) * float(r["entry"] or 0) * float(r.get("mult") or 1) for r in live}
+                if w.get(t["id"]) and sum(w.values()) > 0:
+                    total += amount * w[t["id"]] / sum(w.values())
+            return round(total, 2)
+        except Exception as e:  # noqa: BLE001
+            log.debug("%s: плата за маржу не посчитана: %s", t.get("symbol"), e)
+            return 0.0
 
     def adopt_orphans(self):
         """Позиция у брокера без записи в журнале (сбой, гонка ордера и отмены, ручная сделка) берётся под управление:

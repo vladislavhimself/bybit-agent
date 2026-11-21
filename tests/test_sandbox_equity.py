@@ -135,7 +135,7 @@ ex = make(br)
 ex.call = capped
 b = ex.balances()
 assert abs(b["equity"] - (300000 - 130 * 20 + 130 * 1.0)) < 1e-6, b["equity"]
-assert ex._ledger["f_fut"] != 0 and ex._ledger["frozen_ts"] > MoexExchange.OPS_START_TS
+assert ex._ledger["f"].get("fut", 0) != 0 and ex._ledger["frozen_ts"] > MoexExchange.OPS_START_TS
 ex._ledger["ts"] = 0
 assert abs(ex.balances()["equity"] - b["equity"]) < 1e-6   # повторный расчёт от замороженной суммы даёт то же
 print("260 сделок при лимите 100 операций на запрос: посчитаны все")

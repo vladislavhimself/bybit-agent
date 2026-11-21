@@ -896,7 +896,11 @@ class Bot:
             extra = float(sum((self.s.get("llm.extra_spend_usd") or {}).values()) if isinstance(self.s.get("llm.extra_spend_usd"), dict) else 0)
             llm = {"calls": c["calls"], "usd": c["usd"], "budget": self.analyst.budget, "month": self.analyst.cost.month(), "tier": self.analyst.spend_tier(),
                    "cap": float(self.s.get("llm.monthly_budget_usd") or 0), "total": self.analyst.cost.total() + extra, "extra": extra}
-        self.tg.send(fmt.balance_message(equity, m, positions, self.j.stats(), float(self.s.get("risk.capital_cap_usd") or 0),
+        stats = self.j.stats()
+        bal = self.last_known[2] if len(self.last_known) > 2 and isinstance(self.last_known[2], dict) else {}
+        if stats.get("n") and bal.get("realized_total") is not None:
+            stats["broker_pnl"], stats["broker_fees"], stats["margin_fees"] = bal["realized_total"], bal.get("broker_fees", 0.0), bal.get("margin_fees", 0.0)
+        self.tg.send(fmt.balance_message(equity, m, positions, stats, float(self.s.get("risk.capital_cap_usd") or 0),
                                          llm, self.cal.next_high(), self.xstream.status() if self.xstream else None,
                                          pendings=self.j.pendings(),
                                          now_lines=self._now_lines(positions),

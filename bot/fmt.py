@@ -174,8 +174,20 @@ def balance_message(equity, m, positions, stats, cap, llm=None, next_macro=None,
     else:
         parts.append(block("Позиции", "открытых нет"))
     if stats.get("n"):
-        parts.append(block("Сделки", f"{stats['n']}: прибыльных {stats['win_rate']}%, средний результат {stats['avg_r']}R",
-                           f"Итог {signed(stats['pnl'])} {CUR} с учётом комиссий ({money(stats.get('fees', 0), 2)} {CUR})"))
+        head = f"{stats['n']}: прибыльных {stats['win_rate']}%, средний результат {stats['avg_r']}R"
+        if stats.get("broker_pnl") is not None:
+            # итог по операциям брокера: в нём есть всё, чего нет в журнале сделок (плата за маржу, три сделки 21.10.2026 мимо журнала,
+            # точная стоимость пункта РТС). Журнал остаётся для разбора отдельных сделок
+            fee_line = f"комиссии {money(stats.get('broker_fees', 0), 2)} {CUR}"
+            if stats.get("margin_fees"):
+                fee_line += f", из них плата за маржу {money(stats['margin_fees'], 2)}"
+            lines = [head, f"Итог {signed(stats['broker_pnl'])} {CUR} по операциям брокера ({fee_line})"]
+            if abs(stats["pnl"] - stats["broker_pnl"]) >= 100:
+                lines.append(f"В журнале сделок {signed(stats['pnl'])}: без платы за маржу и трёх сделок 21.10, не попавших в журнал")
+            parts.append(block("Сделки", *lines))
+        else:
+            parts.append(block("Сделки", head,
+                               f"Итог {signed(stats['pnl'])} {CUR} с учётом комиссий ({money(stats.get('fees', 0), 2)} {CUR})"))
     if llm:
         tier_ru = {"normal": "обычный: сильная модель на важные источники", "economy": "экономный: сильная модель только на быстрые каналы и раскрытия",
                    "minimal": "минимальный: всё разбирает дешёвая модель до конца суток"}.get(llm.get("tier"))

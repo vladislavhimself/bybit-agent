@@ -569,7 +569,9 @@ class MoexExchange:
                     key = sym or x.get("figi")
                     open_qty[key] = open_qty.get(key, 0.0) + qty
             else:
-                shares_upnl += q2f(x.get("expectedYield"))
+                ey = x.get("expectedYield")
+                # песочница expectedYield по акциям не присылает: считаем по ценам, иначе открытый шорт выглядел бы нулём
+                shares_upnl += q2f(ey) if ey is not None else (q2f(x.get("currentPrice")) - q2f(x.get("averagePositionPrice"))) * q2f(x.get("quantity"))
         shares = q2f(p.get("totalAmountShares")) + q2f(p.get("totalAmountEtf")) + q2f(p.get("totalAmountBonds"))
         legacy = cash + shares + fut_var
         if self.mode == "live":
@@ -599,6 +601,12 @@ class MoexExchange:
             equity = legacy
         upnl = fut_price_upnl + shares_upnl
         out = {"equity": equity, "wallet": equity - upnl, "unrealised": upnl, "available": cash, "total_equity": equity, "legacy_equity": legacy}
+        led = getattr(self, "_ledger", None)
+        if led and led.get("dep"):
+            # итог всех закрытых сделок по операциям брокера: капитал − пополнения − результат открытых позиций
+            out["realized_total"] = equity - upnl - led.get("dep", 0.0)
+            out["broker_fees"] = -(led.get("fee", 0.0) + led.get("mfee", 0.0))
+            out["margin_fees"] = -led.get("mfee", 0.0)
         self._last_bal = dict(out)
         return out
 
@@ -623,14 +631,15 @@ class MoexExchange:
 
     def _fut_ledger(self, force=False):
         """Суммы по всем операциям счёта: var — вармаржа клирингов (начисления и списания), fut — платежи по сделкам с фьючерсами,
-        net — чистое количество контрактов по тикеру из сделок (для сверки с открытыми позициями). Старые операции (старше двух суток)
-        суммируются один раз и держатся в памяти, хвост перечитывается раз в минуту или сразу после изменения позиций."""
+        dep — пополнения и выводы, fee — комиссии брокера, mfee — плата за маржу, net — чистое количество контрактов по тикеру из сделок
+        (для сверки с открытыми позициями). Старые операции (старше двух суток) суммируются один раз и держатся в памяти, хвост
+        перечитывается раз в минуту или сразу после изменения позиций."""
         now = time.time()
         st = getattr(self, "_ledger", None)
         if st and not force and now - st["ts"] < 60:
             return st
         if st is None:
-            st = {"frozen_ts": self.OPS_START_TS, "f_var": 0.0, "f_fut": 0.0, "f_net": {}, "ts": 0.0}
+            st = {"frozen_ts": self.OPS_START_TS, "f": {}, "f_net": {}, "ts": 0.0}
         raw = self._ops_window(st["frozen_ts"] - 1, now + 60)
         seen, ops = set(), []
         for o in raw:
@@ -639,9 +648,8 @@ class MoexExchange:
                 seen.add(k)
                 ops.append(o)
         new_frozen = now - 2 * 86400 if now - 2 * 86400 > st["frozen_ts"] + 86400 else st["frozen_ts"]
-        f_var, f_fut, f_net = st["f_var"], st["f_fut"], dict(st["f_net"])
-        t_var = t_fut = 0.0
-        t_net = {}
+        f, f_net = dict(st["f"]), dict(st["f_net"])
+        t, t_net = {}, {}
         figi2sym, uid2sym = getattr(self, "_figi2sym", {}), getattr(self, "_uid2sym", {})
         for o in ops:
             ts = self._op_ts(o)
@@ -649,12 +657,15 @@ class MoexExchange:
                 continue
             typ = (o.get("operationType") or "").replace("OPERATION_TYPE_", "")
             pay = q2f(o.get("payment"))
-            old = ts < new_frozen
+            acc, acc_net = (f, f_net) if ts < new_frozen else (t, t_net)
             if "VARMARGIN" in typ:
-                if old:
-                    f_var += pay
-                else:
-                    t_var += pay
+                acc["var"] = acc.get("var", 0.0) + pay
+            elif typ == "MARGIN_FEE":
+                acc["mfee"] = acc.get("mfee", 0.0) + pay
+            elif "FEE" in typ or "COMMISSION" in typ:
+                acc["fee"] = acc.get("fee", 0.0) + pay
+            elif typ.startswith("INPUT") or typ.startswith("OUTPUT") or typ.startswith("INP_") or typ.startswith("OUT_"):
+                acc["dep"] = acc.get("dep", 0.0) + pay
             elif o.get("instrumentType") == "futures" and (typ.startswith("BUY") or typ.startswith("SELL")):
                 sym = figi2sym.get(o.get("figi")) or uid2sym.get(o.get("instrumentUid")) or o.get("figi") or ""
                 try:
@@ -662,18 +673,24 @@ class MoexExchange:
                 except (TypeError, ValueError):
                     qty = 0.0
                 qty = qty if typ.startswith("BUY") else -qty
-                if old:
-                    f_fut += pay
-                    f_net[sym] = f_net.get(sym, 0.0) + qty
-                else:
-                    t_fut += pay
-                    t_net[sym] = t_net.get(sym, 0.0) + qty
+                acc["fut"] = acc.get("fut", 0.0) + pay
+                acc_net[sym] = acc_net.get(sym, 0.0) + qty
         net = dict(f_net)
         for k, v in t_net.items():
             net[k] = net.get(k, 0.0) + v
-        self._ledger = {"frozen_ts": new_frozen, "f_var": f_var, "f_fut": f_fut, "f_net": f_net, "ts": now,
-                        "var": f_var + t_var, "fut": f_fut + t_fut, "net": net}
+        tot = {k: f.get(k, 0.0) + t.get(k, 0.0) for k in ("var", "fut", "dep", "fee", "mfee")}
+        self._ledger = {"frozen_ts": new_frozen, "f": f, "f_net": f_net, "ts": now, "net": net, **tot}
         return self._ledger
+
+    def margin_fees(self, start_ts, end_ts):
+        """Плата за маржу (перенос непокрытых позиций через ночь) за период: [(ts, сумма > 0)]. В результат сделок брокер её не включает."""
+        out = []
+        for o in self._ops_window(start_ts - 1, end_ts + 60):
+            if (o.get("operationType") or "").endswith("MARGIN_FEE"):
+                ts = self._op_ts(o)
+                if start_ts <= ts <= end_ts:
+                    out.append((ts, -q2f(o.get("payment"))))
+        return out
 
     @staticmethod
     def _ledger_residual(led, open_qty):
@@ -937,9 +954,13 @@ class MoexExchange:
             sym = self._figi2sym.get(op.get("figi")) or self._uid2sym.get(op.get("instrumentUid"))
             if not sym or (symbol and sym != symbol):
                 continue
-            d = by.setdefault(sym, {"symbol": sym, "pnl": 0.0, "fees": 0.0, "exit": 0.0, "ts": 0, "side": "", "qty": 0.0, "entry": entry or 0.0})
+            d = by.setdefault(sym, {"symbol": sym, "pnl": 0.0, "fees": 0.0, "exit": 0.0, "ts": 0, "side": "", "qty": 0.0, "entry": entry or 0.0,
+                                    "pay": 0.0, "net": 0.0})
             pay = q2f(op.get("payment"))
             typ = op.get("operationType", "")
+            if typ in ("OPERATION_TYPE_BUY", "OPERATION_TYPE_SELL"):
+                d["pay"] += pay
+                d["net"] += float(op.get("quantity") or 0) * (1 if typ == "OPERATION_TYPE_BUY" else -1)
             if typ == "OPERATION_TYPE_BROKER_FEE" or "FEE" in typ or "COMMISSION" in typ:
                 d["fees"] += -pay
                 d["pnl"] += pay
@@ -958,6 +979,16 @@ class MoexExchange:
                     d["side"] = "Sell" if typ == "OPERATION_TYPE_SELL" else "Buy"
                     if entry is None:
                         d["qty"] = qty
+        if entry is not None and getattr(self, "mode", "demo") != "live":
+            # Песочница, фьючерс: если за окно сделки покупки и продажи сошлись в ноль, результат = платежи брокера − комиссии.
+            # По ценам × стоимость шага выходило неточно: у РТС стоимость пункта меняется с курсом доллара (06–07.11: −1 239 вместо −1 885),
+            # средняя цена после добора округлялась до шага (20.11: 4 092 вместо 4 132). Вход вне окна (взятая под управление позиция) —
+            # количества не сходятся, остаётся расчёт по ценам.
+            inst = self.instruments()
+            for d in by.values():
+                if (inst.get(d["symbol"]) or {}).get("kind") == "future" and d["ts"] and abs(d["net"]) < 1e-9 and abs(d["pay"]) > 0:
+                    d["pnl"] = d["pay"] - d["fees"]
+                    d["by_payments"] = True
         return [d for d in by.values() if d["ts"]]
 
     # ---------- округления ----------
